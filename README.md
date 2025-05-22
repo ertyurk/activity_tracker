@@ -23,7 +23,7 @@ A simple command-line tool that tracks your application usage on macOS, includin
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/app-tracker-demo.git
+git clone https://github.com/ertyurk/app-tracker-demo.git
 cd app-tracker-demo
 ```
 
@@ -87,7 +87,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 2. Clone and build:
 ```bash
-git clone https://github.com/yourusername/app-tracker-demo.git
+git clone https://github.com/ertyurk/app-tracker-demo.git
 cd app-tracker-demo
 cargo build --release
 ```
