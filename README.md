@@ -1,6 +1,12 @@
-# macOS App Usage Tracker
+# macOS Experimental App Usage Tracker
 
 A simple command-line tool that tracks your application usage on macOS, including browser tabs and time spent on each application. The tool runs in the background and records your activity, saving the data in an easy-to-analyze CSV format.
+
+---
+#! Important
+Use [neura-hustle-tracker](https://github.com/adolfousier/neura-hustle-tracker/blob/main/README.md) instead for a serius use.
+---
+
 
 ## Features
 
