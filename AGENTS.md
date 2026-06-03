@@ -25,6 +25,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - `audit` should support day and explicit window args, using boundary-gap checks for explicit windows.
 - Agent/report readiness and quality gates should be scoped to the requested window; include today-wide audit as separate background context.
 - `query` and `logs` should support narrow filters plus broad `--text` recall across app, bundle, title, URL, domain, category, and activity type.
+- `query` and `logs` should support `--order asc|desc`; agents should use `--order desc --limit N` for latest matching rows.
 - `inventory --json` should provide windowed app/domain/category/activity-type facets for SwiftUI filter menus and AI planning without raw-log scans.
 - `schema --json` should expose CLI/data-contract capabilities for SwiftUI and tool harness setup.
 - `now --json` should remain a cheap current-activity poll for SwiftUI/menu-bar clients.
@@ -68,6 +69,7 @@ cargo run -- timeline 2026-06-03 --json
 cargo run -- query --from 2026-06-03 --to 2026-06-03 --domain github --json
 cargo run -- query --since 2026-06-03T08:00:00+02:00 --until 2026-06-03T09:00:00+02:00 --json
 cargo run -- query --last-minutes 120 --json
+cargo run -- query --last-minutes 120 --order desc --limit 20 --json
 cargo run -- query --category Development --limit 50 --json
 cargo run -- inventory --last-minutes 240 --limit 20 --json
 cargo run -- audit 2026-06-03 --json

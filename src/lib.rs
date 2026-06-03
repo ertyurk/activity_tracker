@@ -278,6 +278,14 @@ pub struct SessionFilterInput<'a> {
     pub domain: Option<&'a str>,
     pub activity_type: Option<&'a str>,
     pub limit: Option<usize>,
+    pub order: SessionOrder,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SessionOrder {
+    #[default]
+    Asc,
+    Desc,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2027,7 +2035,10 @@ pub fn filter_sessions(
         })
         .collect();
 
-    filtered.sort_by_key(|session| session.start_time);
+    filtered.sort_by_key(|session| (session.start_time, session.end_time));
+    if input.order == SessionOrder::Desc {
+        filtered.reverse();
+    }
     if let Some(limit) = input.limit {
         filtered.truncate(limit);
     }
@@ -5989,6 +6000,51 @@ mod tests {
             by_text.first().and_then(|session| session.title.as_deref()),
             Some("Pull Request")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn filters_sessions_can_return_most_recent_limited_rows() -> AnyhowResult<()> {
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let first = browser_session(
+            start,
+            0,
+            60,
+            Some("first"),
+            Some("https://example.com/first"),
+        )?;
+        let second = browser_session(
+            start,
+            60,
+            120,
+            Some("second"),
+            Some("https://example.com/second"),
+        )?;
+        let third = browser_session(
+            start,
+            120,
+            180,
+            Some("third"),
+            Some("https://example.com/third"),
+        )?;
+
+        let filtered = filter_sessions(
+            vec![first, second, third],
+            SessionFilterInput {
+                limit: Some(2),
+                order: SessionOrder::Desc,
+                ..SessionFilterInput::default()
+            },
+        );
+        let titles = filtered
+            .iter()
+            .filter_map(|session| session.title.as_deref())
+            .collect::<Vec<_>>();
+
+        assert_eq!(titles, vec!["third", "second"]);
         Ok(())
     }
 

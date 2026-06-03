@@ -26,7 +26,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 13. Omit window args on `query` for all-history search.
 14. Use `cargo run -- day YYYY-MM-DD --json` for daily summaries.
 15. Use `cargo run -- logs YYYY-MM-DD --json` for one-day raw sessions.
-16. Narrow `query` or `logs` with `--app`, `--title`, `--url`, `--text`, `--category`, `--domain`, `--activity-type active|idle|untracked`, and `--limit`; use `--text` for broad recall across app, bundle, title, URL, domain, category, and activity type.
+16. Narrow `query` or `logs` with `--app`, `--title`, `--url`, `--text`, `--category`, `--domain`, `--activity-type active|idle|untracked`, `--order asc|desc`, and `--limit`; use `--text` for broad recall across app, bundle, title, URL, domain, category, and activity type, and use `--order desc --limit N` for newest matching rows.
 17. Use `cargo run -- inventory --last-minutes N --limit 20 --json` for app/domain/category/activity-type facets before choosing filters or populating UI picker options.
 18. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
 19. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
@@ -50,6 +50,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Background remove: `cargo run -- service uninstall`
 - CSV import: `cargo run -- import-csv ~/Desktop/usage_stats.csv --json`
 - Broad search: `cargo run -- query --text "driverry devops" --json`
+- Latest search: `cargo run -- query --text "driverry devops" --order desc --limit 20 --json`
 - URL search: `cargo run -- logs 2026-06-03 --url pull/123 --json`
 - Filter inventory: `cargo run -- inventory --last-minutes 240 --limit 20 --json`
 - Window audit: `cargo run -- audit --last-minutes 120 --json`

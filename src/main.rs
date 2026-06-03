@@ -11,9 +11,9 @@ use activity_tracker::{
     DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS, DEFAULT_IDLE_THRESHOLD_SECONDS,
     DEFAULT_INTERVAL_SECONDS, DEFAULT_PROBE_MISS_TOLERANCE, DEFAULT_RECENT_CHECKPOINT_SECONDS,
     LaunchAgentConfig, LogStore, MacOsProbe, ProbeMissStabilizer, QueryTimeWindow,
-    QueryTimeWindowInput, Result, SessionFilterInput, TrackerError, TrackerState, UsageSession,
-    audit_sessions, audit_sessions_in_window, clip_sessions_to_window, day_bounds, filter_sessions,
-    format_seconds, install_launch_agent, inventory_for_sessions, legacy_data_dir,
+    QueryTimeWindowInput, Result, SessionFilterInput, SessionOrder, TrackerError, TrackerState,
+    UsageSession, audit_sessions, audit_sessions_in_window, clip_sessions_to_window, day_bounds,
+    filter_sessions, format_seconds, install_launch_agent, inventory_for_sessions, legacy_data_dir,
     legacy_sessions_path, parse_date, query_time_window, service_status, service_status_report,
     summarize_all, summarize_day, summarize_window, timeline_blocks, uninstall_launch_agent,
 };
@@ -149,6 +149,8 @@ struct QueryArgs {
     activity_type: Option<String>,
     #[arg(long)]
     limit: Option<usize>,
+    #[arg(long, value_enum, default_value_t = SessionOrderArg::Asc)]
+    order: SessionOrderArg,
     #[arg(long)]
     json: bool,
 }
@@ -186,8 +188,34 @@ struct LogsArgs {
     activity_type: Option<String>,
     #[arg(long)]
     limit: Option<usize>,
+    #[arg(long, value_enum, default_value_t = SessionOrderArg::Asc)]
+    order: SessionOrderArg,
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SessionOrderArg {
+    Asc,
+    Desc,
+}
+
+impl SessionOrderArg {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Asc => "asc",
+            Self::Desc => "desc",
+        }
+    }
+}
+
+impl From<SessionOrderArg> for SessionOrder {
+    fn from(value: SessionOrderArg) -> Self {
+        match value {
+            SessionOrderArg::Asc => Self::Asc,
+            SessionOrderArg::Desc => Self::Desc,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -594,6 +622,7 @@ fn print_query(store: &LogStore, args: QueryArgs) -> Result<()> {
             domain: args.domain.as_deref(),
             activity_type: args.activity_type.as_deref(),
             limit: args.limit,
+            order: args.order.into(),
         },
     );
     let summary = summarize_window(&sessions, window.start, window.end);
@@ -619,6 +648,7 @@ fn print_query(store: &LogStore, args: QueryArgs) -> Result<()> {
                 "domain": args.domain.as_deref(),
                 "activity_type": args.activity_type.as_deref(),
                 "limit": args.limit,
+                "order": args.order.as_str(),
             },
             "summary": summary,
             "timeline": timeline,
@@ -648,6 +678,7 @@ fn print_logs(store: &LogStore, args: LogsArgs) -> Result<()> {
             domain: args.domain.as_deref(),
             activity_type: args.activity_type.as_deref(),
             limit: args.limit,
+            order: args.order.into(),
         },
     );
 
@@ -1049,7 +1080,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 {"name": "url", "type": "string|null", "required": false},
             ],
             "window_args": ["--from", "--to", "--since", "--until", "--last-minutes"],
-            "filters": ["--app", "--title", "--url", "--text", "--category", "--domain", "--activity-type", "--limit"],
+            "filters": ["--app", "--title", "--url", "--text", "--category", "--domain", "--activity-type", "--limit", "--order"],
             "service_install_args": ["--bin", "--interval-seconds", "--idle-threshold-seconds", "--no-load"],
             "service_status_fields": ["label", "loaded", "running", "pid", "program", "arguments", "stdout_path", "stderr_path", "raw", "error"],
             "read_commands": [
@@ -1103,7 +1134,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         println!("activity_types: active, idle, untracked");
         println!("window_args: --from, --to, --since, --until, --last-minutes");
         println!(
-            "filters: --app, --title, --url, --text, --category, --domain, --activity-type, --limit"
+            "filters: --app, --title, --url, --text, --category, --domain, --activity-type, --limit, --order"
         );
         Ok(())
     }
