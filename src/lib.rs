@@ -782,6 +782,7 @@ impl LogStore {
             let inserted = self.insert_session_db(session)?;
             if inserted {
                 self.append_session_jsonl(session)?;
+                self.append_session_csv(session)?;
             }
             Ok(inserted)
         })
@@ -1042,30 +1043,10 @@ impl LogStore {
             fs::create_dir_all(parent)?;
         }
         let mut writer = Writer::from_path(path)?;
-        writer.write_record([
-            "Start Time",
-            "End Time",
-            "Duration (seconds)",
-            "App Name",
-            "Bundle ID",
-            "Title",
-            "Category",
-            "Activity Type",
-            "URL",
-        ])?;
+        write_csv_header(&mut writer)?;
 
         for session in sessions {
-            writer.write_record([
-                session.start_time.to_rfc3339(),
-                session.end_time.to_rfc3339(),
-                format!("{:.3}", session.duration_seconds),
-                session.app_name.clone(),
-                session.bundle_id.clone(),
-                session.title.clone().unwrap_or_default(),
-                session.category.clone(),
-                session.activity_type.to_string(),
-                session.url.clone().unwrap_or_default(),
-            ])?;
+            write_csv_session(&mut writer, session)?;
         }
 
         writer.flush()?;
@@ -1883,6 +1864,25 @@ impl LogStore {
         Ok(())
     }
 
+    fn append_session_csv(&self, session: &UsageSession) -> Result<()> {
+        let csv_path = self.csv_path();
+        if let Some(parent) = csv_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let needs_header = !csv_path.exists() || fs::metadata(&csv_path)?.len() == 0;
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(csv_path)?;
+        let mut writer = Writer::from_writer(file);
+        if needs_header {
+            write_csv_header(&mut writer)?;
+        }
+        write_csv_session(&mut writer, session)?;
+        writer.flush()?;
+        Ok(())
+    }
+
     fn ensure_jsonl_mirror_exists(&self) -> Result<()> {
         if self.sessions_path().exists() {
             return Ok(());
@@ -1918,6 +1918,36 @@ fn configure_db_connection(conn: &Connection) -> Result<()> {
          PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;",
     )?;
+    Ok(())
+}
+
+fn write_csv_header<W: Write>(writer: &mut Writer<W>) -> Result<()> {
+    writer.write_record([
+        "Start Time",
+        "End Time",
+        "Duration (seconds)",
+        "App Name",
+        "Bundle ID",
+        "Title",
+        "Category",
+        "Activity Type",
+        "URL",
+    ])?;
+    Ok(())
+}
+
+fn write_csv_session<W: Write>(writer: &mut Writer<W>, session: &UsageSession) -> Result<()> {
+    writer.write_record([
+        session.start_time.to_rfc3339(),
+        session.end_time.to_rfc3339(),
+        format!("{:.3}", session.duration_seconds),
+        session.app_name.clone(),
+        session.bundle_id.clone(),
+        session.title.clone().unwrap_or_default(),
+        session.category.clone(),
+        session.activity_type.to_string(),
+        session.url.clone().unwrap_or_default(),
+    ])?;
     Ok(())
 }
 
@@ -4722,6 +4752,35 @@ mod tests {
                 .sessions_in_window(Some(window_start), Some(window_end))?
                 .len(),
             1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn append_session_keeps_default_csv_view_current() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let end = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing end"))?;
+        let session = UsageSession::from_entity(&entity(), start, end)
+            .ok_or_else(|| anyhow::anyhow!("missing session"))?;
+
+        store.append_session(&session)?;
+        store.append_session(&session)?;
+
+        let csv = fs::read_to_string(store.csv_path())?;
+        let lines = csv.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines
+                .get(1)
+                .is_some_and(|line| line.contains("Example Project"))
         );
         Ok(())
     }

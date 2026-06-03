@@ -67,7 +67,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 
 - Keep storage/query code testable without macOS permissions.
 - Keep routine day/range reads backed by SQLite indexed time columns rather than all-history scans.
-- Persist each completed session immediately to SQLite and mirror it to JSONL; CSV is derived.
+- Persist each completed session immediately to SQLite, mirror it to JSONL, and append it to the default CSV view; repair commands may rewrite derived files from SQLite.
 - Configure each SQLite connection with WAL, normal synchronous mode, foreign keys, and busy timeout so background writes and agent reads coexist.
 - Use `verify --json` to check SQLite integrity and JSONL mirror readability/count/content sync.
 - Use `repair-mirror --json` to rebuild JSONL mirror and CSV view from SQLite if verification reports a broken or out-of-sync mirror.

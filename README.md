@@ -16,7 +16,7 @@ In-progress local-first macOS activity tracker for building near-perfect persona
 - Stores source-of-truth logs in SQLite under `~/.activity_tracker/activity.db`.
 - Configures SQLite connections with WAL, normal synchronous mode, foreign keys, and a busy timeout so CLI reads can coexist with the background writer.
 - Maintains indexed epoch timestamps in SQLite for scalable day/range queries.
-- Mirrors completed sessions to JSONL for audit/export fallback.
+- Mirrors completed sessions to JSONL for audit/export fallback and keeps the default CSV view current.
 - Maintains an open-session checkpoint so a restart can recover the active span instead of losing it.
 - Reports collector health, freshness, service state, and today's data-quality audit via `health --json`.
 - Generates CSV exports for spreadsheet workflows.
