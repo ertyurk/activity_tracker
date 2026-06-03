@@ -20,6 +20,7 @@ In-progress local-first macOS activity tracker for building near-perfect persona
 - Generates CSV exports for spreadsheet workflows.
 - Provides `--json` output for AI/tool callers.
 - Provides `inventory --json` for SwiftUI/AI filter menus across apps, domains, categories, and activity types.
+- Provides `schema --json` so SwiftUI/AI tool harnesses can discover the CLI/data contract without parsing help text.
 - Installs as a `launchd` user service for behind-the-scenes collection.
 
 ## Install
@@ -52,6 +53,7 @@ macOS will likely ask for Accessibility permission for the terminal or binary ho
 
 ```bash
 activity_tracker paths --json
+activity_tracker schema --json
 activity_tracker agent --json
 activity_tracker agent --last-minutes 240 --json
 activity_tracker agent 2026-06-03 --json
@@ -98,6 +100,7 @@ Windowed summaries and timelines are clipped to the requested day/range/last-min
 `audit --json` reports log quality for a day or explicit window: gaps above a configurable threshold, overlaps, invalid rows, missing titles, browser sessions missing URLs, browser blank tabs, suspicious browser title/URL mismatches, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, bounded quality issue samples, and current open-session state. With `--last-minutes`, `--since`/`--until`, or `--from`/`--to`, audit uses the same indexed window query as `query`; explicit windows include leading/trailing uncovered spans as gaps. Known browser blank tabs are canonicalized as `about:newtab` for new sessions.
 `health --json` is the cheap service substrate check for agents: launchd state, storage freshness, latest observed activity age, open checkpoint, paths, and today's audit/quality counts and breakdowns.
 `service status --json` reports launchd load/running state and PID without requiring agents to parse `launchctl` text.
+`schema --json` reports the stable CLI/data contract: storage paths, default thresholds, activity types, known categories, session fields, supported window args, filters, read commands, repair commands, service commands, quality issue kinds, and local-privacy flags.
 `reclassify` recomputes categories from current app and browser-domain rules, useful after improving category mappings.
 `reclassify`, `repair-gaps`, `repair-titles`, `repair-urls`, and `repair-context` accept optional `--from`/`--to`, `--since`/`--until`, or `--last-minutes` windows so an agent can dry-run and apply repairs to the same audited window instead of touching all history.
 `repair-gaps` converts audited gaps in completed logs into explicit `activity_type: "untracked"` sessions so missing time stays visible instead of disappearing from totals.

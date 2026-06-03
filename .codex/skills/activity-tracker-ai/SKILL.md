@@ -12,33 +12,35 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 ## Query Workflow
 
 1. Run `cargo run -- paths --json` to discover storage paths.
-2. Use `cargo run -- agent --json` as the first AI/reporting hook: readiness, window-scoped quality score/status/scoped candidate repair commands, dry-run repair plan, warnings, window audit with bounded quality issue samples, today's audit/quality for background context, bounded summary, most recent timeline context, open checkpoint, and paths.
-3. Use `cargo run -- agent --last-minutes N --json` for rolling auto-report windows, or `cargo run -- agent YYYY-MM-DD --json` for compact day context.
-4. Add `--include-sessions` to `agent` only when raw sessions are necessary.
-5. Use `cargo run -- health --json` before reports when you need the full launchd/storage health payload.
-6. Use `cargo run -- report YYYY-MM-DD --json` for the full daily AI payload: summary, sessions, open checkpoint, and paths.
-7. Use `cargo run -- timeline YYYY-MM-DD --json` for compact ordered blocks grouped by app/domain/category.
-8. Use `cargo run -- audit YYYY-MM-DD --json` or `cargo run -- audit --last-minutes N --json` to inspect log quality gaps, overlaps, invalid rows, missing titles, browser sessions missing URLs, browser blank tabs, suspicious browser title/URL mismatches, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, bounded quality issue samples, and open checkpoint state.
-9. Use `cargo run -- query --from YYYY-MM-DD --to YYYY-MM-DD --json` for cross-day search payloads with summary, compact timeline, sessions, filters, and open checkpoint.
-10. Use `cargo run -- query --since RFC3339 --until RFC3339 --json` for precise report windows, or `cargo run -- query --last-minutes N --json` for rolling auto-report windows.
-11. Omit window args on `query` for all-history search.
-12. Use `cargo run -- day YYYY-MM-DD --json` for daily summaries.
-13. Use `cargo run -- logs YYYY-MM-DD --json` for one-day raw sessions.
-14. Narrow `query` or `logs` with `--app`, `--title`, `--url`, `--text`, `--category`, `--domain`, `--activity-type active|idle|untracked`, and `--limit`; use `--text` for broad recall across app, bundle, title, URL, domain, category, and activity type.
-15. Use `cargo run -- inventory --last-minutes N --limit 20 --json` for app/domain/category/activity-type facets before choosing filters or populating UI picker options.
-16. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
-17. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
-18. After category rule changes, run `cargo run -- reclassify --dry-run --json`, then rerun without `--dry-run`.
-19. After auditing gaps, run `cargo run -- repair-gaps --dry-run --json`, then rerun without `--dry-run` to insert explicit untracked sessions.
-20. After improving title capture, run `cargo run -- repair-titles --dry-run --json`, then rerun without `--dry-run` to backfill native app titles and browser titles whose exact URL has one unique observed title.
-21. After improving URL normalization, run `cargo run -- repair-urls --dry-run --json`, then rerun without `--dry-run` to canonicalize safe URL-only fixes such as known or surrounded browser blank tabs.
-22. After exposing browser context mismatches or missing browser context, run `cargo run -- repair-context --dry-run --json`, then rerun without `--dry-run` only for high-confidence neighbor or exact-URL repairs.
-23. Prefer scoped repair commands returned by `agent.repair_plan.actionable_commands`; `agent.quality.repair_commands` are candidates and may explain quality warnings that are not safely repairable.
+2. Run `cargo run -- schema --json` when an app/tool harness needs the CLI/data contract.
+3. Use `cargo run -- agent --json` as the first AI/reporting hook: readiness, window-scoped quality score/status/scoped candidate repair commands, dry-run repair plan, warnings, window audit with bounded quality issue samples, today's audit/quality for background context, bounded summary, most recent timeline context, open checkpoint, and paths.
+4. Use `cargo run -- agent --last-minutes N --json` for rolling auto-report windows, or `cargo run -- agent YYYY-MM-DD --json` for compact day context.
+5. Add `--include-sessions` to `agent` only when raw sessions are necessary.
+6. Use `cargo run -- health --json` before reports when you need the full launchd/storage health payload.
+7. Use `cargo run -- report YYYY-MM-DD --json` for the full daily AI payload: summary, sessions, open checkpoint, and paths.
+8. Use `cargo run -- timeline YYYY-MM-DD --json` for compact ordered blocks grouped by app/domain/category.
+9. Use `cargo run -- audit YYYY-MM-DD --json` or `cargo run -- audit --last-minutes N --json` to inspect log quality gaps, overlaps, invalid rows, missing titles, browser sessions missing URLs, browser blank tabs, suspicious browser title/URL mismatches, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, bounded quality issue samples, and open checkpoint state.
+10. Use `cargo run -- query --from YYYY-MM-DD --to YYYY-MM-DD --json` for cross-day search payloads with summary, compact timeline, sessions, filters, and open checkpoint.
+11. Use `cargo run -- query --since RFC3339 --until RFC3339 --json` for precise report windows, or `cargo run -- query --last-minutes N --json` for rolling auto-report windows.
+12. Omit window args on `query` for all-history search.
+13. Use `cargo run -- day YYYY-MM-DD --json` for daily summaries.
+14. Use `cargo run -- logs YYYY-MM-DD --json` for one-day raw sessions.
+15. Narrow `query` or `logs` with `--app`, `--title`, `--url`, `--text`, `--category`, `--domain`, `--activity-type active|idle|untracked`, and `--limit`; use `--text` for broad recall across app, bundle, title, URL, domain, category, and activity type.
+16. Use `cargo run -- inventory --last-minutes N --limit 20 --json` for app/domain/category/activity-type facets before choosing filters or populating UI picker options.
+17. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
+18. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
+19. After category rule changes, run `cargo run -- reclassify --dry-run --json`, then rerun without `--dry-run`.
+20. After auditing gaps, run `cargo run -- repair-gaps --dry-run --json`, then rerun without `--dry-run` to insert explicit untracked sessions.
+21. After improving title capture, run `cargo run -- repair-titles --dry-run --json`, then rerun without `--dry-run` to backfill native app titles and browser titles whose exact URL has one unique observed title.
+22. After improving URL normalization, run `cargo run -- repair-urls --dry-run --json`, then rerun without `--dry-run` to canonicalize safe URL-only fixes such as known or surrounded browser blank tabs.
+23. After exposing browser context mismatches or missing browser context, run `cargo run -- repair-context --dry-run --json`, then rerun without `--dry-run` only for high-confidence neighbor or exact-URL repairs.
+24. Prefer scoped repair commands returned by `agent.repair_plan.actionable_commands`; `agent.quality.repair_commands` are candidates and may explain quality warnings that are not safely repairable.
 
 ## Operations
 
 - Health check: `cargo run -- doctor --json`
 - Service substrate health: `cargo run -- health --json`
+- CLI/data contract: `cargo run -- schema --json`
 - AI/reporting hook: `cargo run -- agent --json`
 - Foreground tracking: `cargo run -- track`
 - Background install: `cargo run --release -- service install`
@@ -67,6 +69,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Treat uncovered leading/trailing spans inside rolling `agent --last-minutes` windows as coverage gaps so auto reports know when their requested interval is only partially observed.
 - Use windowed `audit` for exact report-window quality checks before calling repairs.
 - Keep `inventory --json` window-aware and backed by the same indexed query window; use it for filter menus instead of scanning raw history in callers.
+- Keep `schema --json` stable enough for SwiftUI/tool harness discovery; update it whenever commands, filters, fields, defaults, or quality issue kinds change.
 - Use app identity plus browser URL domains for categories; reclassify stored sessions when mappings change.
 - Keep observed domain mappings current for recurring work tools, communication, AI, writing, research, and development sites.
 - For browsers, collect active tab title and URL from the same AppleScript sample so rows do not mix different tab states.

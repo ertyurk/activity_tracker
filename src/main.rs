@@ -76,6 +76,8 @@ enum Command {
     RepairContext(RepairContextArgs),
     /// Print storage and service paths.
     Paths(OutputArgs),
+    /// Print machine-readable CLI/data contract for app and agent harnesses.
+    Schema(OutputArgs),
     /// Print collector health, freshness, service state, and today audit.
     Health(HealthArgs),
     /// Print compact AI-agent readiness and recent report context.
@@ -376,6 +378,7 @@ fn run() -> Result<()> {
         Command::RepairUrls(args) => repair_urls(&store, args),
         Command::RepairContext(args) => repair_context(&store, args),
         Command::Paths(args) => print_paths(&store, args),
+        Command::Schema(args) => print_schema(&store, args),
         Command::Health(args) => print_health(&store, args),
         Command::Agent(args) => print_agent(&store, args),
         Command::Doctor(args) => doctor(&store, args),
@@ -975,6 +978,123 @@ fn print_paths(store: &LogStore, args: OutputArgs) -> Result<()> {
         if let Some(path) = legacy_sessions_path() {
             println!("legacy_sessions_jsonl: {}", path.display());
         }
+        Ok(())
+    }
+}
+
+fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
+    let now = Local::now();
+    if args.json {
+        let value = serde_json::json!({
+            "schema_version": 1,
+            "generated_at": now,
+            "binary": std::env::current_exe().ok(),
+            "storage": {
+                "source_of_truth": "sqlite",
+                "default_root": "~/.activity_tracker",
+                "env_override": "ACTIVITY_TRACKER_HOME",
+                "global_data_dir_arg": "--data-dir",
+                "sqlite": store.db_path(),
+                "sessions_jsonl": store.sessions_path(),
+                "csv": store.csv_path(),
+                "exports": store.exports_dir(),
+                "logs": store.logs_dir(),
+            },
+            "defaults": {
+                "track_interval_seconds": DEFAULT_INTERVAL_SECONDS,
+                "idle_threshold_seconds": DEFAULT_IDLE_THRESHOLD_SECONDS,
+                "probe_miss_tolerance": DEFAULT_PROBE_MISS_TOLERANCE,
+                "recent_checkpoint_seconds": DEFAULT_RECENT_CHECKPOINT_SECONDS,
+                "audit_gap_threshold_seconds": DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS,
+                "health_stale_threshold_seconds": DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS,
+                "agent_last_minutes": DEFAULT_AGENT_LAST_MINUTES,
+                "agent_timeline_limit": DEFAULT_AGENT_TIMELINE_LIMIT,
+                "agent_summary_limit": DEFAULT_AGENT_SUMMARY_LIMIT,
+            },
+            "activity_types": ["active", "idle", "untracked"],
+            "known_categories": [
+                "AI",
+                "Browser",
+                "Calendar",
+                "Communication",
+                "Design",
+                "Development",
+                "Email",
+                "Idle",
+                "Productivity",
+                "Research",
+                "Social",
+                "System",
+                "Terminal",
+                "Uncategorized",
+                "Untracked",
+                "Writing",
+            ],
+            "session_fields": [
+                {"name": "start_time", "type": "rfc3339_datetime", "required": true},
+                {"name": "end_time", "type": "rfc3339_datetime", "required": true},
+                {"name": "duration_seconds", "type": "number", "required": true},
+                {"name": "app_name", "type": "string", "required": true},
+                {"name": "bundle_id", "type": "string", "required": true},
+                {"name": "title", "type": "string|null", "required": false},
+                {"name": "category", "type": "string", "required": true},
+                {"name": "activity_type", "type": "active|idle|untracked", "required": true},
+                {"name": "url", "type": "string|null", "required": false},
+            ],
+            "window_args": ["--from", "--to", "--since", "--until", "--last-minutes"],
+            "filters": ["--app", "--title", "--url", "--text", "--category", "--domain", "--activity-type", "--limit"],
+            "read_commands": [
+                "agent",
+                "audit",
+                "day",
+                "health",
+                "inventory",
+                "logs",
+                "paths",
+                "query",
+                "report",
+                "schema",
+                "service status",
+                "summary",
+                "timeline",
+            ],
+            "repair_commands": [
+                "reclassify",
+                "repair-context",
+                "repair-gaps",
+                "repair-titles",
+                "repair-urls",
+            ],
+            "export_commands": ["export", "import-csv"],
+            "service_commands": ["service install", "service status", "service uninstall"],
+            "quality_issue_kinds": [
+                "missing_title",
+                "browser_missing_url",
+                "browser_context_mismatch",
+                "uncategorized",
+            ],
+            "privacy": {
+                "network_sync": false,
+                "local_only_by_default": true,
+                "url_data_sensitive": true,
+            },
+        });
+        print_json(&value)
+    } else {
+        println!("schema_version: 1");
+        println!("storage_source_of_truth: sqlite");
+        println!("default_root: ~/.activity_tracker");
+        println!("sqlite: {}", store.db_path().display());
+        println!("preferred_agent_command: activity_tracker agent --json");
+        println!("preferred_window_audit: activity_tracker audit --last-minutes 120 --json");
+        println!(
+            "filter_inventory: activity_tracker inventory --last-minutes 240 --limit 20 --json"
+        );
+        println!("activity_types: active, idle, untracked");
+        println!("window_args: --from, --to, --since, --until, --last-minutes");
+        println!(
+            "filters: --app, --title, --url, --text, --category, --domain, --activity-type, --limit"
+        );
         Ok(())
     }
 }
