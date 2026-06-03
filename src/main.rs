@@ -75,6 +75,23 @@ const SERVICE_CONFIG_FIELDS: &[&str] = &[
     "idle_threshold_arg_valid",
 ];
 const SERVICE_LOG_FIELDS: &[&str] = &["stdout_path", "stderr_path", "stdout", "stderr"];
+const SERVICE_INSTALL_FIELDS: &[&str] = &[
+    "ok",
+    "generated_at",
+    "plist",
+    "binary",
+    "data_dir",
+    "loaded",
+    "interval_seconds",
+    "idle_threshold_seconds",
+];
+const SERVICE_UNINSTALL_FIELDS: &[&str] = &[
+    "ok",
+    "generated_at",
+    "plist",
+    "unload_requested",
+    "removed_or_absent",
+];
 const NOW_FIELDS: &[&str] = &[
     "generated_at",
     "ready",
@@ -320,6 +337,14 @@ const REPAIR_WINDOW_FIELDS: &[&str] = &[
     "last_minutes",
     "start",
     "end",
+];
+const EXPORT_FIELDS: &[&str] = &[
+    "ok",
+    "generated_at",
+    "path",
+    "date",
+    "format",
+    "session_count",
 ];
 const IMPORT_REPORT_FIELDS: &[&str] = &["scanned", "imported", "skipped_duplicates", "dry_run"];
 const RECLASSIFY_REPORT_FIELDS: &[&str] =
@@ -1835,14 +1860,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
             "window_args": ["--from", "--to", "--since", "--until", "--last-minutes"],
             "filters": ["--app", "--title", "--url", "--text", "--category", "--domain", "--activity-type", "--limit", "--order"],
             "export_args": ["--date", "--format", "--output", "--json"],
-            "export_fields": [
-                "ok",
-                "generated_at",
-                "path",
-                "date",
-                "format",
-                "session_count",
-            ],
+            "export_fields": EXPORT_FIELDS,
             "import_report_fields": import_report_fields,
             "repair_window_fields": repair_window_fields,
             "reclassify_report_fields": reclassify_report_fields,
@@ -1855,23 +1873,8 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
             "service_uninstall_args": ["--json"],
             "service_install_persisted_args": ["--data-dir", "--interval-seconds", "--idle-threshold-seconds"],
             "service_install_binary_requirements": service_install_binary_requirements,
-            "service_install_fields": [
-                "ok",
-                "generated_at",
-                "plist",
-                "binary",
-                "data_dir",
-                "loaded",
-                "interval_seconds",
-                "idle_threshold_seconds",
-            ],
-            "service_uninstall_fields": [
-                "ok",
-                "generated_at",
-                "plist",
-                "unload_requested",
-                "removed_or_absent",
-            ],
+            "service_install_fields": SERVICE_INSTALL_FIELDS,
+            "service_uninstall_fields": SERVICE_UNINSTALL_FIELDS,
             "service_status_fields": SERVICE_STATUS_FIELDS,
             "service_config_fields": SERVICE_CONFIG_FIELDS,
             "service_log_fields": SERVICE_LOG_FIELDS,
@@ -3331,23 +3334,21 @@ fn print_windowed_json<T: Serialize>(
     window: &QueryTimeWindow,
     generated_at: chrono::DateTime<Local>,
 ) -> Result<()> {
+    let value = windowed_json_value(report, window, generated_at)?;
+    print_json(&value)
+}
+
+fn windowed_json_value<T: Serialize>(
+    report: &T,
+    window: &QueryTimeWindow,
+    generated_at: chrono::DateTime<Local>,
+) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(report)?;
     if let Some(object) = value.as_object_mut() {
         object.insert("generated_at".to_string(), serde_json::json!(generated_at));
-        object.insert(
-            "window".to_string(),
-            serde_json::json!({
-                "from": window.from,
-                "to": window.to,
-                "since": window.since,
-                "until": window.until,
-                "last_minutes": window.last_minutes,
-                "start": window.start,
-                "end": window.end,
-            }),
-        );
+        object.insert("window".to_string(), window_json_value(window));
     }
-    print_json(&value)
+    Ok(value)
 }
 
 fn print_window_text(window: &QueryTimeWindow) {
@@ -4110,6 +4111,97 @@ mod tests {
                 hints: Vec::new(),
             })?,
             DOCTOR_FIELDS,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn export_repair_field_constants_match_serialized_payloads() -> anyhow::Result<()> {
+        let now = local_datetime(2026, 6, 3, 8, 0, 0)?;
+        let window = query_time_window(
+            QueryTimeWindowInput {
+                last_minutes: Some(120),
+                ..QueryTimeWindowInput::default()
+            },
+            now,
+        )?;
+
+        assert_object_keys(
+            serde_json::json!({
+                "ok": true,
+                "generated_at": now,
+                "path": "exports/activity.csv",
+                "date": "2026-06-03",
+                "format": "csv",
+                "session_count": 10,
+            }),
+            EXPORT_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::to_value(activity_tracker::ImportReport::default())?,
+            IMPORT_REPORT_FIELDS,
+        )?;
+        assert_object_keys(window_json_value(&window), REPAIR_WINDOW_FIELDS)?;
+        assert_object_keys(
+            windowed_json_value(&activity_tracker::ReclassifyReport::default(), &window, now)?,
+            RECLASSIFY_REPORT_FIELDS,
+        )?;
+        assert_object_keys(
+            windowed_json_value(&activity_tracker::RepairGapsReport::default(), &window, now)?,
+            REPAIR_GAPS_REPORT_FIELDS,
+        )?;
+        assert_object_keys(
+            windowed_json_value(
+                &activity_tracker::RepairTitlesReport::default(),
+                &window,
+                now,
+            )?,
+            REPAIR_TITLES_REPORT_FIELDS,
+        )?;
+        assert_object_keys(
+            windowed_json_value(&activity_tracker::RepairUrlsReport::default(), &window, now)?,
+            REPAIR_URLS_REPORT_FIELDS,
+        )?;
+        assert_object_keys(
+            windowed_json_value(
+                &activity_tracker::RepairContextReport::default(),
+                &window,
+                now,
+            )?,
+            REPAIR_CONTEXT_REPORT_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::to_value(activity_tracker::RepairMirrorReport {
+                sqlite_session_count: 10,
+                jsonl_session_count: 10,
+                csv_path: PathBuf::from("usage_stats.csv"),
+                jsonl_path: PathBuf::from("sessions.jsonl"),
+                repaired: true,
+            })?,
+            REPAIR_MIRROR_REPORT_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::json!({
+                "ok": true,
+                "generated_at": now,
+                "plist": "com.local.activity-tracker.plist",
+                "binary": "activity_tracker",
+                "data_dir": "~/.activity_tracker",
+                "loaded": true,
+                "interval_seconds": 2,
+                "idle_threshold_seconds": 300,
+            }),
+            SERVICE_INSTALL_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::json!({
+                "ok": true,
+                "generated_at": now,
+                "plist": "com.local.activity-tracker.plist",
+                "unload_requested": true,
+                "removed_or_absent": true,
+            }),
+            SERVICE_UNINSTALL_FIELDS,
         )?;
         Ok(())
     }
