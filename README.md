@@ -67,6 +67,7 @@ activity_tracker verify --json
 activity_tracker service install --no-load --json
 activity_tracker service status --json
 activity_tracker service logs --lines 80 --json
+activity_tracker service uninstall --json
 activity_tracker day 2026-06-03 --json
 activity_tracker report 2026-06-03 --json
 activity_tracker timeline 2026-06-03 --json
@@ -114,7 +115,7 @@ Windowed summaries and timelines are clipped to the requested day/range/last-min
 `verify --json` runs storage integrity checks: SQLite integrity, SQLite session count, JSONL mirror readability/content sync, and default CSV readability/content sync.
 `service status --json` reports launchd load/running state, PID, program, arguments, and log paths without requiring agents to parse `launchctl` text.
 `service logs --json` reports bounded launchd stdout/stderr tails with paths so agents can inspect service errors without shelling into log files.
-`schema --json` reports the stable CLI/data contract: storage paths, default thresholds, activity types, known categories, session fields, agent fields, storage verification fields, service install binary requirements/output fields, supported window args, filters, read commands, repair commands, service commands, JSON error codes, quality issue kinds, and local-privacy flags.
+`schema --json` reports the stable CLI/data contract: storage paths, default thresholds, activity types, known categories, session fields, agent fields, storage verification fields, service install/uninstall args and output fields, service install binary requirements, supported window args, filters, read commands, repair commands, service commands, JSON error codes, quality issue kinds, and local-privacy flags.
 When a runtime command invoked with `--json` fails, it emits a JSON error envelope with `ok: false`, `generated_at`, `error.code`, and `error.message` so tool harnesses can branch without scraping stderr.
 `reclassify` recomputes categories from current app and browser-domain rules, useful after improving category mappings.
 `reclassify`, `repair-gaps`, `repair-titles`, `repair-urls`, and `repair-context` accept optional `--from`/`--to`, `--since`/`--until`, or `--last-minutes` windows so an agent can dry-run and apply repairs to the same audited window instead of touching all history.
@@ -195,7 +196,7 @@ activity_tracker service logs --lines 80 --json
 activity_tracker service uninstall
 ```
 
-`service install` validates that the selected binary is an absolute executable file, writes `~/Library/LaunchAgents/com.local.activity-tracker.plist`, loads it, and starts `activity_tracker --data-dir <root> track --quiet` with persisted data root, interval, and idle-threshold arguments. `service install --json` returns the plist path, binary path, data root, load state, and persisted interval/idle config; invalid binaries fail with `error.code: "invalid_service_binary"`.
+`service install` validates that the selected binary is an absolute executable file, writes `~/Library/LaunchAgents/com.local.activity-tracker.plist`, loads it, and starts `activity_tracker --data-dir <root> track --quiet` with persisted data root, interval, and idle-threshold arguments. `service install --json` returns the plist path, binary path, data root, load state, and persisted interval/idle config; invalid binaries fail with `error.code: "invalid_service_binary"`. `service uninstall --json` returns the plist path and whether the plist is removed or already absent.
 
 Default idle threshold is 300 seconds and default sampling interval is 2 seconds. Foreground or service runs can override them:
 

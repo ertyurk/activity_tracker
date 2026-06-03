@@ -98,6 +98,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Keep `service install` rejecting non-absolute, missing, non-file, or non-executable binaries before writing LaunchAgent state and supporting `--json` for setup agents; LaunchAgent arguments must stay aligned with selected data root, configured sample interval, and idle threshold.
 - Keep `service status --json` normalized enough for agents to inspect program, arguments, and log paths without parsing raw `launchctl` text.
 - Keep `service logs --json` bounded and path-aware so agents can inspect launchd stdout/stderr tails without shell-specific file reads.
+- Keep `service uninstall --json` exposing plist removal status for setup agents without text scraping.
 - Keep `doctor --json` non-fatal for active-app or idle probe failures; expose probe status/error fields, launchd service binary/config validation, storage verification, and hints so setup agents can diagnose permissions/service setup.
 - Keep runtime failures under `--json` machine-readable with `ok: false`, `error.code`, and `error.message`; do not make agents parse stderr for expected command errors.
 - Canonicalize known browser blank tabs as `about:newtab` and keep them separate from actionable missing-URL audit rows.

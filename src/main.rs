@@ -369,7 +369,7 @@ enum ServiceAction {
     /// Write LaunchAgent plist and load tracker now.
     Install(ServiceInstallArgs),
     /// Stop launchd service and remove plist.
-    Uninstall,
+    Uninstall(OutputArgs),
     /// Print launchd service state.
     Status(OutputArgs),
     /// Print launchd stdout/stderr log tails.
@@ -1177,7 +1177,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     ];
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 15,
+            "schema_version": 16,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1237,6 +1237,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
             "window_args": ["--from", "--to", "--since", "--until", "--last-minutes"],
             "filters": ["--app", "--title", "--url", "--text", "--category", "--domain", "--activity-type", "--limit", "--order"],
             "service_install_args": ["--bin", "--interval-seconds", "--idle-threshold-seconds", "--no-load", "--json"],
+            "service_uninstall_args": ["--json"],
             "service_install_persisted_args": ["--data-dir", "--interval-seconds", "--idle-threshold-seconds"],
             "service_install_binary_requirements": service_install_binary_requirements,
             "service_install_fields": [
@@ -1248,6 +1249,13 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "loaded",
                 "interval_seconds",
                 "idle_threshold_seconds",
+            ],
+            "service_uninstall_fields": [
+                "ok",
+                "generated_at",
+                "plist",
+                "unload_requested",
+                "removed_or_absent",
             ],
             "service_status_fields": ["label", "loaded", "running", "pid", "program", "arguments", "stdout_path", "stderr_path", "raw", "error"],
             "service_config_fields": [
@@ -1438,7 +1446,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 15");
+        println!("schema_version: 16");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
@@ -2198,10 +2206,21 @@ fn run_service(store: &LogStore, command: ServiceCommand) -> Result<()> {
                 Ok(())
             }
         }
-        ServiceAction::Uninstall => {
+        ServiceAction::Uninstall(args) => {
             let plist = uninstall_launch_agent(true)?;
-            println!("{}", plist.display());
-            Ok(())
+            if args.json {
+                let value = serde_json::json!({
+                    "ok": true,
+                    "generated_at": Local::now(),
+                    "plist": plist,
+                    "unload_requested": true,
+                    "removed_or_absent": !plist.exists(),
+                });
+                print_json(&value)
+            } else {
+                println!("{}", plist.display());
+                Ok(())
+            }
         }
         ServiceAction::Status(args) => print_service_status(args),
         ServiceAction::Logs(args) => print_service_logs(store, args),
@@ -3052,6 +3071,21 @@ mod tests {
                         json: true,
                         ..
                     }),
+                })),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn service_uninstall_accepts_json_flag() {
+        let cli = Cli::try_parse_from(["activity_tracker", "service", "uninstall", "--json"]);
+
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                command: Some(Command::Service(ServiceCommand {
+                    action: ServiceAction::Uninstall(OutputArgs { json: true }),
                 })),
                 ..
             })

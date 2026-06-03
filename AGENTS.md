@@ -47,6 +47,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - `service install` should reject non-absolute, missing, non-file, or non-executable binaries, support `--json` for setup agents, then persist the selected data root plus configured `--interval-seconds` and `--idle-threshold-seconds` into LaunchAgent arguments.
 - `service status --json` should expose normalized program, arguments, stdout path, and stderr path.
 - `service logs --json` should expose bounded launchd stdout/stderr tails with paths for service diagnostics.
+- `service uninstall --json` should expose plist removal status for setup agents without scraping text output.
 - `doctor --json` should keep setup diagnostics machine-readable and non-fatal for active-app or idle probe failures; expose probe status/error fields, launchd service binary/config validation, storage verification, and hints instead of exiting before agents can inspect the payload.
 - Commands invoked with `--json` should emit a machine-readable error envelope on runtime failure (`ok: false`, `error.code`, `error.message`) instead of forcing agents to scrape stderr.
 - CLI output should support plain text for humans and `--json` for agents; quality commands should expose both time coverage and context richness.
