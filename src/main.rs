@@ -54,7 +54,7 @@ enum Command {
     Query(QueryArgs),
     /// Print raw sessions. Defaults to today.
     Logs(LogsArgs),
-    /// Audit one-day log quality for gaps, overlaps, and invalid rows.
+    /// Audit log quality for a day or explicit window.
     Audit(AuditArgs),
     /// Print all-time summary.
     Summary(OutputArgs),
@@ -188,7 +188,10 @@ struct LogsArgs {
 
 #[derive(Debug, Args)]
 struct AuditArgs {
+    /// Local day to audit. Defaults to today unless window args are set.
     date: Option<String>,
+    #[command(flatten)]
+    window: RepairWindowArgs,
     #[arg(long, default_value_t = DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS)]
     gap_threshold_seconds: f64,
     #[arg(long)]
@@ -647,24 +650,64 @@ fn print_logs(store: &LogStore, args: LogsArgs) -> Result<()> {
 }
 
 fn print_audit(store: &LogStore, args: AuditArgs) -> Result<()> {
-    let date = date_or_today(args.date.as_deref())?;
     let now = Local::now();
-    let sessions =
-        store.sessions_for_day_with_open(date, now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
-    let audit = audit_sessions(&sessions, args.gap_threshold_seconds);
-    let summary = summarize_day(&sessions, date)?;
+    let window_args_set = repair_window_args_set(&args.window);
+    if args.date.is_some() && window_args_set {
+        return Err(TrackerError::ConflictingQueryWindowArgs(
+            "audit date cannot be combined with --from, --to, --since, --until, or --last-minutes",
+        ));
+    }
+
+    let (date, window, sessions, audit, summary) = if window_args_set {
+        let window = repair_window(&args.window, now)?;
+        let sessions = store.sessions_in_window_with_open(
+            window.start,
+            window.end,
+            now,
+            DEFAULT_RECENT_CHECKPOINT_SECONDS,
+        )?;
+        let audit = audit_sessions_in_window(
+            &sessions,
+            args.gap_threshold_seconds,
+            window.start,
+            window.end,
+        );
+        let summary = summarize_window(&sessions, window.start, window.end);
+        (None, Some(window), sessions, audit, summary)
+    } else {
+        let date = date_or_today(args.date.as_deref())?;
+        let sessions =
+            store.sessions_for_day_with_open(date, now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
+        let audit = audit_sessions(&sessions, args.gap_threshold_seconds);
+        let summary = summarize_day(&sessions, date)?;
+        (Some(date), None, sessions, audit, summary)
+    };
+
+    let open_session = store.open_session_checkpoint()?;
+    let includes_active_session = open_session.as_ref().is_some_and(|checkpoint| {
+        sessions
+            .iter()
+            .any(|session| session.start_time == checkpoint.start_time)
+    });
+
     if args.json {
         let value = serde_json::json!({
             "date": date,
+            "window": window.as_ref().map(window_json_value),
             "generated_at": now,
             "gap_threshold_seconds": args.gap_threshold_seconds.max(0.0),
             "summary": summary,
             "audit": audit,
-            "open_session": store.open_session_checkpoint()?,
+            "includes_active_session": includes_active_session,
+            "open_session": open_session,
         });
         print_json(&value)
     } else {
-        println!("date: {date}");
+        if let Some(date) = date {
+            println!("date: {date}");
+        } else if let Some(window) = &window {
+            print_window_text(window);
+        }
         println!("sessions: {}", audit.session_count);
         println!("gaps: {}", audit.gap_count);
         println!("overlaps: {}", audit.overlap_count);
@@ -1678,6 +1721,26 @@ fn repair_window(args: &RepairWindowArgs, now: chrono::DateTime<Local>) -> Resul
         },
         now,
     )
+}
+
+fn repair_window_args_set(args: &RepairWindowArgs) -> bool {
+    args.from.is_some()
+        || args.to.is_some()
+        || args.since.is_some()
+        || args.until.is_some()
+        || args.last_minutes.is_some()
+}
+
+fn window_json_value(window: &QueryTimeWindow) -> serde_json::Value {
+    serde_json::json!({
+        "from": window.from,
+        "to": window.to,
+        "since": window.since,
+        "until": window.until,
+        "last_minutes": window.last_minutes,
+        "start": window.start,
+        "end": window.end,
+    })
 }
 
 fn print_windowed_json<T: Serialize>(

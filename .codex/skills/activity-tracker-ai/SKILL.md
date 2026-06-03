@@ -18,7 +18,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 5. Use `cargo run -- health --json` before reports when you need the full launchd/storage health payload.
 6. Use `cargo run -- report YYYY-MM-DD --json` for the full daily AI payload: summary, sessions, open checkpoint, and paths.
 7. Use `cargo run -- timeline YYYY-MM-DD --json` for compact ordered blocks grouped by app/domain/category.
-8. Use `cargo run -- audit YYYY-MM-DD --json` to inspect log quality gaps, overlaps, invalid rows, missing titles, browser sessions missing URLs, browser blank tabs, suspicious browser title/URL mismatches, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, bounded quality issue samples, and open checkpoint state.
+8. Use `cargo run -- audit YYYY-MM-DD --json` or `cargo run -- audit --last-minutes N --json` to inspect log quality gaps, overlaps, invalid rows, missing titles, browser sessions missing URLs, browser blank tabs, suspicious browser title/URL mismatches, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, bounded quality issue samples, and open checkpoint state.
 9. Use `cargo run -- query --from YYYY-MM-DD --to YYYY-MM-DD --json` for cross-day search payloads with summary, compact timeline, sessions, filters, and open checkpoint.
 10. Use `cargo run -- query --since RFC3339 --until RFC3339 --json` for precise report windows, or `cargo run -- query --last-minutes N --json` for rolling auto-report windows.
 11. Omit window args on `query` for all-history search.
@@ -48,6 +48,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Broad search: `cargo run -- query --text "driverry devops" --json`
 - URL search: `cargo run -- logs 2026-06-03 --url pull/123 --json`
 - Filter inventory: `cargo run -- inventory --last-minutes 240 --limit 20 --json`
+- Window audit: `cargo run -- audit --last-minutes 120 --json`
 - Scoped reclassify: `cargo run -- reclassify --from 2026-06-03 --to 2026-06-03 --dry-run --json`
 - Title repair: `cargo run -- repair-titles --dry-run --json`
 - URL repair: `cargo run -- repair-urls --dry-run --json`
@@ -64,6 +65,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Include the provisional open session in live query commands (`day`, `logs`, `query`, `summary`, `report`) when it overlaps the query.
 - Keep windowed summaries and timelines clipped to requested day/range/last-minutes bounds; raw session arrays can retain original persisted start/end for audit/debug context.
 - Treat uncovered leading/trailing spans inside rolling `agent --last-minutes` windows as coverage gaps so auto reports know when their requested interval is only partially observed.
+- Use windowed `audit` for exact report-window quality checks before calling repairs.
 - Keep `inventory --json` window-aware and backed by the same indexed query window; use it for filter menus instead of scanning raw history in callers.
 - Use app identity plus browser URL domains for categories; reclassify stored sessions when mappings change.
 - Keep observed domain mappings current for recurring work tools, communication, AI, writing, research, and development sites.

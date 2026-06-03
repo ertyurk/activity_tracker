@@ -22,6 +22,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - Live query commands should include the current open session provisionally; exports should stay completed-session based.
 - Windowed summaries and timelines must clip overlapping sessions to the requested day/range/last-minutes bounds; raw session arrays may keep original persisted bounds for audit/debug context.
 - Rolling `agent --last-minutes` quality should count uncovered leading/trailing spans inside the requested window as coverage gaps.
+- `audit` should support day and explicit window args, using boundary-gap checks for explicit windows.
 - Agent/report readiness and quality gates should be scoped to the requested window; include today-wide audit as separate background context.
 - `query` and `logs` should support narrow filters plus broad `--text` recall across app, bundle, title, URL, domain, category, and activity type.
 - `inventory --json` should provide windowed app/domain/category/activity-type facets for SwiftUI filter menus and AI planning without raw-log scans.
@@ -64,6 +65,7 @@ cargo run -- query --last-minutes 120 --json
 cargo run -- query --category Development --limit 50 --json
 cargo run -- inventory --last-minutes 240 --limit 20 --json
 cargo run -- audit 2026-06-03 --json
+cargo run -- audit --last-minutes 120 --json
 cargo run -- logs 2026-06-03 --domain github --json
 cargo run -- logs 2026-06-03 --title project --json
 cargo run -- logs 2026-06-03 --url pull/123 --json

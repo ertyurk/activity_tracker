@@ -68,6 +68,7 @@ activity_tracker query --category Development --limit 50 --json
 activity_tracker inventory --last-minutes 240 --limit 20 --json
 activity_tracker logs 2026-06-03 --json
 activity_tracker audit 2026-06-03 --json
+activity_tracker audit --last-minutes 120 --json
 activity_tracker logs 2026-06-03 --domain github --json
 activity_tracker logs 2026-06-03 --app "Code" --json
 activity_tracker logs 2026-06-03 --title "project" --json
@@ -94,7 +95,7 @@ For rolling `agent --last-minutes` windows, the window audit also treats uncover
 Windowed summaries and timelines are clipped to the requested day/range/last-minutes bounds so auto reports do not overcount sessions that started before the report window. Raw session arrays keep original persisted bounds for audit/debug context.
 `timeline --json` returns compact ordered blocks grouped by app/domain/category so agents can write reports without reading every raw session.
 `inventory --json` returns windowed app, domain, category, and activity-type facets with clipped seconds, percentages, session counts, first/last seen timestamps, and latest title/URL context for agents or SwiftUI filter pickers.
-`audit --json` reports log quality for a day: gaps above a configurable threshold, overlaps, invalid rows, missing titles, browser sessions missing URLs, browser blank tabs, suspicious browser title/URL mismatches, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, bounded quality issue samples, and current open-session state. Known browser blank tabs are canonicalized as `about:newtab` for new sessions.
+`audit --json` reports log quality for a day or explicit window: gaps above a configurable threshold, overlaps, invalid rows, missing titles, browser sessions missing URLs, browser blank tabs, suspicious browser title/URL mismatches, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, bounded quality issue samples, and current open-session state. With `--last-minutes`, `--since`/`--until`, or `--from`/`--to`, audit uses the same indexed window query as `query`; explicit windows include leading/trailing uncovered spans as gaps. Known browser blank tabs are canonicalized as `about:newtab` for new sessions.
 `health --json` is the cheap service substrate check for agents: launchd state, storage freshness, latest observed activity age, open checkpoint, paths, and today's audit/quality counts and breakdowns.
 `service status --json` reports launchd load/running state and PID without requiring agents to parse `launchctl` text.
 `reclassify` recomputes categories from current app and browser-domain rules, useful after improving category mappings.
