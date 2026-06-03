@@ -1000,6 +1000,13 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
     let ready = agent_ready(&service, &storage, &window_audit);
     let warnings = agent_warnings(&service, &storage, &window_audit);
     let quality = agent_quality(&window_audit, repair_window);
+    let repair_plan = agent_repair_plan(
+        store,
+        &window_audit,
+        window_start,
+        window_end,
+        repair_window,
+    )?;
     let summary = summarize_all(&sessions);
     let summary_truncated = summary_rows_truncated(&summary, args.summary_limit);
     let summary = limit_summary(summary, args.summary_limit);
@@ -1019,6 +1026,7 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
             "generated_at": now,
             "ready": ready,
             "quality": quality,
+            "repair_plan": repair_plan,
             "warnings": warnings,
             "window": {
                 "mode": window_mode,
@@ -1084,8 +1092,14 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
             }
         }
         if !quality.repair_commands.is_empty() {
-            println!("repair_commands:");
-            for command in quality.repair_commands {
+            println!("candidate_repair_commands:");
+            for command in &quality.repair_commands {
+                println!("  {command}");
+            }
+        }
+        if !repair_plan.actionable_commands.is_empty() {
+            println!("actionable_repair_commands:");
+            for command in repair_plan.actionable_commands {
                 println!("  {command}");
             }
         }
@@ -1231,6 +1245,23 @@ struct AgentQuality {
     repair_commands: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct AgentRepairPlan {
+    candidate_commands: Vec<String>,
+    actionable_commands: Vec<String>,
+    items: Vec<AgentRepairPlanItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AgentRepairPlanItem {
+    command: String,
+    reason: &'static str,
+    issue_count: usize,
+    scanned: usize,
+    repairable_count: usize,
+    actionable: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum AgentRepairWindow {
     Date(NaiveDate),
@@ -1306,6 +1337,111 @@ fn agent_quality(
         blocking_issue_count,
         context_issue_count,
         repair_commands,
+    }
+}
+
+fn agent_repair_plan(
+    store: &LogStore,
+    audit: &activity_tracker::ActivityAudit,
+    window_start: Option<chrono::DateTime<Local>>,
+    window_end: Option<chrono::DateTime<Local>>,
+    repair_window: AgentRepairWindow,
+) -> Result<AgentRepairPlan> {
+    let mut items = Vec::new();
+
+    if audit.gap_count > 0 {
+        let report = store.repair_gaps_in_window(
+            window_start,
+            window_end,
+            DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS,
+            true,
+        )?;
+        items.push(agent_repair_plan_item(
+            agent_repair_command("repair-gaps", repair_window),
+            "coverage_gaps",
+            audit.gap_count,
+            report.scanned,
+            report.repaired,
+        ));
+    }
+
+    if audit.uncategorized_session_count > 0 {
+        let report = store.reclassify_sessions_in_window(window_start, window_end, true)?;
+        items.push(agent_repair_plan_item(
+            agent_repair_command("reclassify", repair_window),
+            "uncategorized_sessions",
+            audit.uncategorized_session_count,
+            report.scanned,
+            report.changed,
+        ));
+    }
+
+    if audit.missing_title_count > 0 {
+        let report = store.repair_titles_in_window(window_start, window_end, true)?;
+        items.push(agent_repair_plan_item(
+            agent_repair_command("repair-titles", repair_window),
+            "missing_titles",
+            audit.missing_title_count,
+            report.scanned,
+            report.repaired,
+        ));
+    }
+
+    if audit.browser_missing_url_count > 0 {
+        let report = store.repair_urls_in_window(window_start, window_end, true)?;
+        items.push(agent_repair_plan_item(
+            agent_repair_command("repair-urls", repair_window),
+            "browser_missing_urls",
+            audit.browser_missing_url_count,
+            report.scanned,
+            report.repaired,
+        ));
+    }
+
+    if audit.browser_context_mismatch_count > 0
+        || audit.missing_title_count > 0
+        || audit.browser_missing_url_count > 0
+    {
+        let report = store.repair_context_in_window(window_start, window_end, true)?;
+        let issue_count =
+            report.mismatches_found + report.missing_titles_found + report.missing_urls_found;
+        items.push(agent_repair_plan_item(
+            agent_repair_command("repair-context", repair_window),
+            "browser_context",
+            issue_count,
+            report.scanned,
+            report.repaired,
+        ));
+    }
+
+    let candidate_commands = items.iter().map(|item| item.command.clone()).collect();
+    let actionable_commands = items
+        .iter()
+        .filter(|item| item.actionable)
+        .map(|item| item.command.clone())
+        .collect();
+
+    Ok(AgentRepairPlan {
+        candidate_commands,
+        actionable_commands,
+        items,
+    })
+}
+
+fn agent_repair_plan_item(
+    command: String,
+    reason: &'static str,
+    issue_count: usize,
+    scanned: usize,
+    repairable_count: usize,
+) -> AgentRepairPlanItem {
+    AgentRepairPlanItem {
+        command,
+        reason,
+        issue_count,
+        scanned,
+        repairable_count,
+        actionable: repairable_count > 0,
     }
 }
 
@@ -1539,6 +1675,7 @@ fn idle_seconds_or_none(probe: &MacOsProbe) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     fn audit_with_counts(
         gaps: usize,
@@ -1633,6 +1770,55 @@ mod tests {
             quality.repair_commands,
             vec!["activity_tracker repair-gaps --from 2026-06-03 --to 2026-06-03 --dry-run --json"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn agent_repair_plan_marks_actionable_reclassify() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let date = parse_date("2026-06-03")?;
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let end = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing end"))?;
+        let entity = activity_tracker::ActiveEntity {
+            bundle_id: "company.thebrowser.dia".to_string(),
+            name: "Dia".to_string(),
+            title: Some("Repo".to_string()),
+            url: Some("https://github.com/owner/repo".to_string()),
+            category: "Browser".to_string(),
+            activity_type: activity_tracker::ActivityType::Active,
+        };
+        let session = UsageSession::from_entity(&entity, start, end)
+            .ok_or_else(|| anyhow::anyhow!("missing session"))?;
+        let (window_start, window_end) = day_bounds(date)?;
+        store.append_session(&session)?;
+
+        let plan = agent_repair_plan(
+            &store,
+            &audit_with_counts(0, 0, 0, 0, 0, 0, 1),
+            Some(window_start),
+            Some(window_end),
+            AgentRepairWindow::Date(date),
+        )?;
+        let item = plan
+            .items
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("missing repair item"))?;
+
+        assert_eq!(
+            plan.actionable_commands,
+            vec!["activity_tracker reclassify --from 2026-06-03 --to 2026-06-03 --dry-run --json"]
+        );
+        assert_eq!(item.reason, "uncategorized_sessions");
+        assert_eq!(item.issue_count, 1);
+        assert_eq!(item.repairable_count, 1);
+        assert!(item.actionable);
         Ok(())
     }
 }

@@ -12,7 +12,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 ## Query Workflow
 
 1. Run `cargo run -- paths --json` to discover storage paths.
-2. Use `cargo run -- agent --json` as the first AI/reporting hook: readiness, window-scoped quality score/status/scoped repair commands, warnings, window audit with bounded quality issue samples, today's audit/quality for background context, bounded summary, most recent timeline context, open checkpoint, and paths.
+2. Use `cargo run -- agent --json` as the first AI/reporting hook: readiness, window-scoped quality score/status/scoped candidate repair commands, dry-run repair plan, warnings, window audit with bounded quality issue samples, today's audit/quality for background context, bounded summary, most recent timeline context, open checkpoint, and paths.
 3. Use `cargo run -- agent --last-minutes N --json` for rolling auto-report windows, or `cargo run -- agent YYYY-MM-DD --json` for compact day context.
 4. Add `--include-sessions` to `agent` only when raw sessions are necessary.
 5. Use `cargo run -- health --json` before reports when you need the full launchd/storage health payload.
@@ -32,7 +32,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 19. After improving title capture, run `cargo run -- repair-titles --dry-run --json`, then rerun without `--dry-run` to backfill native app titles and browser titles whose exact URL has one unique observed title.
 20. After improving URL normalization, run `cargo run -- repair-urls --dry-run --json`, then rerun without `--dry-run` to canonicalize safe URL-only fixes such as known or surrounded browser blank tabs.
 21. After exposing browser context mismatches or missing browser context, run `cargo run -- repair-context --dry-run --json`, then rerun without `--dry-run` only for high-confidence neighbor or exact-URL repairs.
-22. Prefer the scoped repair commands returned by `agent.quality.repair_commands`; otherwise add the same `--from`/`--to`, `--since`/`--until`, or `--last-minutes` window used for the audit.
+22. Prefer scoped repair commands returned by `agent.repair_plan.actionable_commands`; `agent.quality.repair_commands` are candidates and may explain quality warnings that are not safely repairable.
 
 ## Operations
 

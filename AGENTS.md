@@ -23,6 +23,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - Agent/report readiness and quality gates should be scoped to the requested window; include today-wide audit as separate background context.
 - Keep window-scoped quality issue samples in `agent --json`; compact today-wide audit samples to keep payload bounded.
 - Keep `agent` repair commands scoped to the same audited window, and keep `reclassify`/repair commands window-aware so agents do not mutate all history for a narrow report.
+- Use `agent.repair_plan.actionable_commands` for automated fixes; `agent.quality.repair_commands` are candidates and may explain non-repairable quality warnings.
 - Tolerate brief active-app probe misses; do not turn transient macOS/AppleScript failures into fake gaps.
 - Audit should expose suspicious browser title/URL mismatches so old mixed-context rows are visible to agents.
 - Use `repair-context` only for high-confidence browser title/URL mismatch or missing-context repairs with neighbor or exact-URL evidence.
