@@ -549,6 +549,13 @@ fn print_audit(store: &LogStore, args: AuditArgs) -> Result<()> {
         println!("gaps: {}", audit.gap_count);
         println!("overlaps: {}", audit.overlap_count);
         println!("invalid_sessions: {}", audit.invalid_session_count);
+        println!("missing_titles: {}", audit.missing_title_count);
+        println!("browser_missing_urls: {}", audit.browser_missing_url_count);
+        println!(
+            "uncategorized_sessions: {}",
+            audit.uncategorized_session_count
+        );
+        println!("untracked_sessions: {}", audit.untracked_session_count);
         println!("total_gap: {}", format_seconds(audit.total_gap_seconds));
         println!("longest_gap: {}", format_seconds(audit.longest_gap_seconds));
         Ok(())
@@ -716,6 +723,19 @@ fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
         println!("today_gaps: {}", audit.gap_count);
         println!("today_overlaps: {}", audit.overlap_count);
         println!("today_invalid_sessions: {}", audit.invalid_session_count);
+        println!("today_missing_titles: {}", audit.missing_title_count);
+        println!(
+            "today_browser_missing_urls: {}",
+            audit.browser_missing_url_count
+        );
+        println!(
+            "today_uncategorized_sessions: {}",
+            audit.uncategorized_session_count
+        );
+        println!(
+            "today_untracked_sessions: {}",
+            audit.untracked_session_count
+        );
         Ok(())
     }
 }

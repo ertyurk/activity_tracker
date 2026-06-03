@@ -245,6 +245,13 @@ pub struct ActivityAudit {
     pub gap_count: usize,
     pub overlap_count: usize,
     pub invalid_session_count: usize,
+    pub active_session_count: usize,
+    pub idle_session_count: usize,
+    pub untracked_session_count: usize,
+    pub missing_title_count: usize,
+    pub browser_session_count: usize,
+    pub browser_missing_url_count: usize,
+    pub uncategorized_session_count: usize,
     pub total_gap_seconds: f64,
     pub longest_gap_seconds: f64,
     pub gaps: Vec<AuditGap>,
@@ -1217,6 +1224,46 @@ pub fn audit_sessions(sessions: &[UsageSession], gap_threshold_seconds: f64) -> 
         .iter()
         .filter_map(invalid_session)
         .collect::<Vec<_>>();
+    let active_session_count = sorted
+        .iter()
+        .filter(|session| session.activity_type == ActivityType::Active)
+        .count();
+    let idle_session_count = sorted
+        .iter()
+        .filter(|session| session.activity_type == ActivityType::Idle)
+        .count();
+    let untracked_session_count = sorted
+        .iter()
+        .filter(|session| session.activity_type == ActivityType::Untracked)
+        .count();
+    let missing_title_count = sorted
+        .iter()
+        .filter(|session| {
+            session.activity_type == ActivityType::Active
+                && session
+                    .title
+                    .as_deref()
+                    .is_none_or(|title| title.trim().is_empty())
+        })
+        .count();
+    let browser_session_count = sorted
+        .iter()
+        .filter(|session| is_browser(&session.bundle_id))
+        .count();
+    let browser_missing_url_count = sorted
+        .iter()
+        .filter(|session| {
+            is_browser(&session.bundle_id)
+                && session
+                    .url
+                    .as_deref()
+                    .is_none_or(|url| url.trim().is_empty())
+        })
+        .count();
+    let uncategorized_session_count = sorted
+        .iter()
+        .filter(|session| session.category == "Uncategorized")
+        .count();
     let gap_threshold_seconds = gap_threshold_seconds.max(0.0);
 
     for pair in sorted.windows(2) {
@@ -1265,6 +1312,13 @@ pub fn audit_sessions(sessions: &[UsageSession], gap_threshold_seconds: f64) -> 
         gap_count: gaps.len(),
         overlap_count: overlaps.len(),
         invalid_session_count: invalid_sessions.len(),
+        active_session_count,
+        idle_session_count,
+        untracked_session_count,
+        missing_title_count,
+        browser_session_count,
+        browser_missing_url_count,
+        uncategorized_session_count,
         total_gap_seconds,
         longest_gap_seconds,
         gaps,
@@ -3103,6 +3157,59 @@ mod tests {
                 .map(|row| row.reason.as_str()),
             Some("end_time_not_after_start_time")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn audit_sessions_reports_context_quality_counts() -> AnyhowResult<()> {
+        let mut browser_missing_context = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing browser start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing browser end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing browser session"))?;
+        browser_missing_context.title = None;
+        browser_missing_context.url = None;
+        browser_missing_context.category = "Uncategorized".to_string();
+        let idle = UsageSession::from_entity(
+            &idle_entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing idle start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 2, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing idle end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing idle session"))?;
+        let untracked = untracked_session(
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 2, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing untracked start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 3, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing untracked end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing untracked session"))?;
+
+        let audit = audit_sessions(&[browser_missing_context, idle, untracked], 30.0);
+
+        assert_eq!(audit.active_session_count, 1);
+        assert_eq!(audit.idle_session_count, 1);
+        assert_eq!(audit.untracked_session_count, 1);
+        assert_eq!(audit.missing_title_count, 1);
+        assert_eq!(audit.browser_session_count, 1);
+        assert_eq!(audit.browser_missing_url_count, 1);
+        assert_eq!(audit.uncategorized_session_count, 1);
         Ok(())
     }
 
