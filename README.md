@@ -64,6 +64,7 @@ activity_tracker agent 2026-06-03 --json
 activity_tracker health --json
 activity_tracker doctor --json
 activity_tracker verify --json
+activity_tracker service install --no-load --json
 activity_tracker service status --json
 activity_tracker service logs --lines 80 --json
 activity_tracker day 2026-06-03 --json
@@ -99,7 +100,7 @@ activity_tracker repair-mirror --json
 ```
 
 `agent --json` is the preferred first call for internal AI/reporting tools: it returns service readiness, storage verification, `report_ready`, `action_required`, a repair plan with actionable commands, a window-scoped `quality` gate with score/status/scoped candidate repair commands, actionable/residual item counts, freshness, warnings, window audit with bounded quality issue samples, today's audit/quality for background context, bounded summary/timeline context, open checkpoint, and paths. It defaults to the last 120 minutes, top 12 summary rows, and the 20 most recent timeline blocks; pass a date for one day, tune `--summary-limit`/`--timeline-limit`, or add `--include-sessions` when a tool needs raw sessions.
-`agent.report_ready` requires the background service, service arguments, freshness, coverage, and full storage verification to be clean. If JSONL or CSV derived storage is broken while SQLite is healthy, `agent.repair_plan.actionable_commands` includes `activity_tracker repair-mirror --json`.
+`agent.report_ready` requires the background service, service binary/config, freshness, coverage, and full storage verification to be clean. If JSONL or CSV derived storage is broken while SQLite is healthy, `agent.repair_plan.actionable_commands` includes `activity_tracker repair-mirror --json`.
 For rolling `agent --last-minutes` windows, the window audit also treats uncovered leading/trailing spans inside the requested window as gaps, so auto-report tools can detect partial coverage even when no two stored rows are separated.
 `report --json` is the preferred full daily payload for AI agents: it includes the day summary, raw sessions, current open-session checkpoint, provisional active session, and storage paths. `query --json` is the preferred cross-day/all-history search payload: it accepts optional `--from`/`--to` local dates, precise RFC3339 `--since`/`--until` timestamps, or `--last-minutes` for auto-report windows, plus the same app/title/url/text/category/domain/activity-type filters as `logs`, and returns summary, compact timeline, raw sessions, filters, and open checkpoint.
 `day`, `logs`, `query`, `summary`, and `report` include the active open session when it overlaps the query; exports stay based on completed sessions. `--text` searches across app, bundle, title, URL, domain, category, and activity type when agents need a broad recall query. `query` and `logs` accept `--order asc|desc`; use `--order desc --limit N` for newest matching rows.
@@ -113,7 +114,7 @@ Windowed summaries and timelines are clipped to the requested day/range/last-min
 `verify --json` runs storage integrity checks: SQLite integrity, SQLite session count, JSONL mirror readability/content sync, and default CSV readability/content sync.
 `service status --json` reports launchd load/running state, PID, program, arguments, and log paths without requiring agents to parse `launchctl` text.
 `service logs --json` reports bounded launchd stdout/stderr tails with paths so agents can inspect service errors without shelling into log files.
-`schema --json` reports the stable CLI/data contract: storage paths, default thresholds, activity types, known categories, session fields, agent fields, storage verification fields, supported window args, filters, read commands, repair commands, service commands, quality issue kinds, and local-privacy flags.
+`schema --json` reports the stable CLI/data contract: storage paths, default thresholds, activity types, known categories, session fields, agent fields, storage verification fields, service install binary requirements/output fields, supported window args, filters, read commands, repair commands, service commands, JSON error codes, quality issue kinds, and local-privacy flags.
 When a runtime command invoked with `--json` fails, it emits a JSON error envelope with `ok: false`, `generated_at`, `error.code`, and `error.message` so tool harnesses can branch without scraping stderr.
 `reclassify` recomputes categories from current app and browser-domain rules, useful after improving category mappings.
 `reclassify`, `repair-gaps`, `repair-titles`, `repair-urls`, and `repair-context` accept optional `--from`/`--to`, `--since`/`--until`, or `--last-minutes` windows so an agent can dry-run and apply repairs to the same audited window instead of touching all history.
@@ -194,7 +195,7 @@ activity_tracker service logs --lines 80 --json
 activity_tracker service uninstall
 ```
 
-`service install` writes `~/Library/LaunchAgents/com.local.activity-tracker.plist`, loads it, and starts `activity_tracker --data-dir <root> track --quiet` with persisted data root, interval, and idle-threshold arguments.
+`service install` validates that the selected binary is an absolute executable file, writes `~/Library/LaunchAgents/com.local.activity-tracker.plist`, loads it, and starts `activity_tracker --data-dir <root> track --quiet` with persisted data root, interval, and idle-threshold arguments. `service install --json` returns the plist path, binary path, data root, load state, and persisted interval/idle config; invalid binaries fail with `error.code: "invalid_service_binary"`.
 
 Default idle threshold is 300 seconds and default sampling interval is 2 seconds. Foreground or service runs can override them:
 

@@ -80,6 +80,8 @@ pub enum TrackerError {
     InvalidActivityType(String),
     #[error("could not resolve local midnight for {0}")]
     InvalidLocalDay(NaiveDate),
+    #[error("invalid service binary `{path}`: {reason}")]
+    InvalidServiceBinary { path: PathBuf, reason: &'static str },
     #[error("AppleScript failed: {0}")]
     AppleScript(String),
     #[error("command `{command}` failed: {stderr}")]
@@ -3113,6 +3115,11 @@ pub fn install_launch_agent(
     config: LaunchAgentConfig,
     load: bool,
 ) -> Result<PathBuf> {
+    validate_service_binary(binary)?;
+    let config = LaunchAgentConfig {
+        interval_seconds: config.interval_seconds.max(1),
+        idle_threshold_seconds: config.idle_threshold_seconds,
+    };
     store.ensure_dirs()?;
     let plist_path = launch_agent_path()?;
     if let Some(parent) = plist_path.parent() {
@@ -3137,6 +3144,47 @@ pub fn install_launch_agent(
     }
 
     Ok(plist_path)
+}
+
+fn validate_service_binary(binary: &Path) -> Result<()> {
+    if !binary.is_absolute() {
+        return Err(TrackerError::InvalidServiceBinary {
+            path: binary.to_path_buf(),
+            reason: "path must be absolute",
+        });
+    }
+
+    let metadata = fs::metadata(binary).map_err(|source| {
+        if source.kind() == std::io::ErrorKind::NotFound {
+            TrackerError::InvalidServiceBinary {
+                path: binary.to_path_buf(),
+                reason: "file does not exist",
+            }
+        } else {
+            TrackerError::Io(source)
+        }
+    })?;
+
+    if !metadata.is_file() {
+        return Err(TrackerError::InvalidServiceBinary {
+            path: binary.to_path_buf(),
+            reason: "path is not a file",
+        });
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err(TrackerError::InvalidServiceBinary {
+                path: binary.to_path_buf(),
+                reason: "file is not executable",
+            });
+        }
+    }
+
+    Ok(())
 }
 
 pub fn uninstall_launch_agent(unload: bool) -> Result<PathBuf> {
@@ -7353,5 +7401,64 @@ mod tests {
         assert!(plist.contains("<string>7</string>"));
         assert!(plist.contains("<string>--idle-threshold-seconds</string>"));
         assert!(plist.contains("<string>120</string>"));
+    }
+
+    #[test]
+    fn validate_service_binary_rejects_relative_and_missing_paths() -> AnyhowResult<()> {
+        let relative = validate_service_binary(Path::new("target/release/activity_tracker"));
+        assert!(matches!(
+            relative,
+            Err(TrackerError::InvalidServiceBinary {
+                reason: "path must be absolute",
+                ..
+            })
+        ));
+
+        let dir = tempfile::tempdir()?;
+        let missing = dir.path().join("missing-binary");
+        let missing_error = validate_service_binary(&missing);
+
+        assert!(matches!(
+            missing_error,
+            Err(TrackerError::InvalidServiceBinary {
+                reason: "file does not exist",
+                ..
+            })
+        ));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_service_binary_requires_file_with_execute_bit() -> AnyhowResult<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir()?;
+        let directory_error = validate_service_binary(dir.path());
+        assert!(matches!(
+            directory_error,
+            Err(TrackerError::InvalidServiceBinary {
+                reason: "path is not a file",
+                ..
+            })
+        ));
+
+        let binary = dir.path().join("activity_tracker");
+        fs::write(&binary, "#!/bin/sh\n")?;
+        let not_executable = validate_service_binary(&binary);
+        assert!(matches!(
+            not_executable,
+            Err(TrackerError::InvalidServiceBinary {
+                reason: "file is not executable",
+                ..
+            })
+        ));
+
+        let mut permissions = fs::metadata(&binary)?.permissions();
+        permissions.set_mode(permissions.mode() | 0o700);
+        fs::set_permissions(&binary, permissions)?;
+
+        validate_service_binary(&binary)?;
+        Ok(())
     }
 }

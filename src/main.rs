@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use std::collections::VecDeque;
 use std::ffi::OsStr;
 use std::io::{self, BufRead, BufReader, Write};
@@ -384,6 +386,8 @@ struct ServiceInstallArgs {
     idle_threshold_seconds: u64,
     #[arg(long)]
     no_load: bool,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -485,6 +489,7 @@ fn tracker_error_code(error: &TrackerError) -> &'static str {
         TrackerError::MissingCsvColumn(_) => "missing_csv_column",
         TrackerError::InvalidActivityType(_) => "invalid_activity_type",
         TrackerError::InvalidLocalDay(_) => "invalid_local_day",
+        TrackerError::InvalidServiceBinary { .. } => "invalid_service_binary",
         TrackerError::AppleScript(_) => "apple_script",
         TrackerError::Command { .. } => "command",
         TrackerError::CommandTimeout(_) => "command_timeout",
@@ -1145,9 +1150,34 @@ fn print_paths(store: &LogStore, args: OutputArgs) -> Result<()> {
 
 fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     let now = Local::now();
+    let service_install_binary_requirements =
+        ["absolute_path", "exists", "regular_file", "executable"];
+    let json_error_codes = [
+        "apple_script",
+        "command",
+        "command_timeout",
+        "conflicting_query_window_args",
+        "ctrlc",
+        "csv",
+        "data_dir_not_found",
+        "home_not_found",
+        "invalid_activity_type",
+        "invalid_date",
+        "invalid_date_range",
+        "invalid_duration",
+        "invalid_local_day",
+        "invalid_service_binary",
+        "invalid_time_range",
+        "invalid_timestamp",
+        "io",
+        "json",
+        "json_line",
+        "missing_csv_column",
+        "sqlite",
+    ];
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 13,
+            "schema_version": 15,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1206,8 +1236,19 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
             ],
             "window_args": ["--from", "--to", "--since", "--until", "--last-minutes"],
             "filters": ["--app", "--title", "--url", "--text", "--category", "--domain", "--activity-type", "--limit", "--order"],
-            "service_install_args": ["--bin", "--interval-seconds", "--idle-threshold-seconds", "--no-load"],
+            "service_install_args": ["--bin", "--interval-seconds", "--idle-threshold-seconds", "--no-load", "--json"],
             "service_install_persisted_args": ["--data-dir", "--interval-seconds", "--idle-threshold-seconds"],
+            "service_install_binary_requirements": service_install_binary_requirements,
+            "service_install_fields": [
+                "ok",
+                "generated_at",
+                "plist",
+                "binary",
+                "data_dir",
+                "loaded",
+                "interval_seconds",
+                "idle_threshold_seconds",
+            ],
             "service_status_fields": ["label", "loaded", "running", "pid", "program", "arguments", "stdout_path", "stderr_path", "raw", "error"],
             "service_config_fields": [
                 "ok",
@@ -1247,6 +1288,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "error.code",
                 "error.message",
             ],
+            "json_error_codes": json_error_codes,
             "storage_verification_fields": [
                 "ok",
                 "sqlite_path",
@@ -1396,7 +1438,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 13");
+        println!("schema_version: 15");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
@@ -2134,12 +2176,27 @@ fn run_service(store: &LogStore, command: ServiceCommand) -> Result<()> {
                 None => std::env::current_exe()?,
             };
             let config = LaunchAgentConfig {
-                interval_seconds: args.interval_seconds,
+                interval_seconds: args.interval_seconds.max(1),
                 idle_threshold_seconds: args.idle_threshold_seconds,
             };
-            let plist = install_launch_agent(&binary, store, config, !args.no_load)?;
-            println!("{}", plist.display());
-            Ok(())
+            let load = !args.no_load;
+            let plist = install_launch_agent(&binary, store, config, load)?;
+            if args.json {
+                let value = serde_json::json!({
+                    "ok": true,
+                    "generated_at": Local::now(),
+                    "plist": plist,
+                    "binary": binary,
+                    "data_dir": store.root(),
+                    "loaded": load,
+                    "interval_seconds": config.interval_seconds,
+                    "idle_threshold_seconds": config.idle_threshold_seconds,
+                });
+                print_json(&value)
+            } else {
+                println!("{}", plist.display());
+                Ok(())
+            }
         }
         ServiceAction::Uninstall => {
             let plist = uninstall_launch_agent(true)?;
@@ -2975,6 +3032,33 @@ mod tests {
     }
 
     #[test]
+    fn service_install_accepts_json_flag() {
+        let cli = Cli::try_parse_from([
+            "activity_tracker",
+            "service",
+            "install",
+            "--bin",
+            "/bin/sh",
+            "--no-load",
+            "--json",
+        ]);
+
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                command: Some(Command::Service(ServiceCommand {
+                    action: ServiceAction::Install(ServiceInstallArgs {
+                        no_load: true,
+                        json: true,
+                        ..
+                    }),
+                })),
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn json_error_payload_is_machine_readable() -> anyhow::Result<()> {
         let value = json_error_value("invalid_date", "bad date");
         let error = value
@@ -3011,6 +3095,13 @@ mod tests {
         assert_eq!(
             tracker_error_code(&TrackerError::CommandTimeout("ioreg".to_string())),
             "command_timeout"
+        );
+        assert_eq!(
+            tracker_error_code(&TrackerError::InvalidServiceBinary {
+                path: PathBuf::from("/tmp/missing"),
+                reason: "file does not exist",
+            }),
+            "invalid_service_binary"
         );
     }
 

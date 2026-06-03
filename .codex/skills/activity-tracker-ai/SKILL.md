@@ -95,7 +95,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Use `repair-urls` to canonicalize known or blank-tab-surrounded URLs; do not infer ordinary missing browser URLs from surrounding sessions.
 - Preserve current session through short active-app probe misses; only create gaps after repeated misses.
 - Keep tracker startup tolerant of initial active-app or idle probe failures so launchd does not exit on transient macOS/AppleScript errors.
-- Keep `service install` LaunchAgent arguments aligned with selected data root, configured sample interval, and idle threshold.
+- Keep `service install` rejecting non-absolute, missing, non-file, or non-executable binaries before writing LaunchAgent state and supporting `--json` for setup agents; LaunchAgent arguments must stay aligned with selected data root, configured sample interval, and idle threshold.
 - Keep `service status --json` normalized enough for agents to inspect program, arguments, and log paths without parsing raw `launchctl` text.
 - Keep `service logs --json` bounded and path-aware so agents can inspect launchd stdout/stderr tails without shell-specific file reads.
 - Keep `doctor --json` non-fatal for active-app or idle probe failures; expose probe status/error fields, launchd service binary/config validation, storage verification, and hints so setup agents can diagnose permissions/service setup.
