@@ -31,7 +31,7 @@ use tracing_subscriber::EnvFilter;
 const DEFAULT_AGENT_LAST_MINUTES: u64 = 120;
 const DEFAULT_AGENT_TIMELINE_LIMIT: usize = 20;
 const DEFAULT_AGENT_SUMMARY_LIMIT: usize = 12;
-const SCHEMA_VERSION: u64 = 21;
+const SCHEMA_VERSION: u64 = 22;
 const SERVICE_INSTALL_BINARY_REQUIREMENTS: &[&str] =
     &["absolute_path", "exists", "regular_file", "executable"];
 const PATHS_FIELDS: &[&str] = &[
@@ -282,6 +282,72 @@ const JSON_ERROR_CODES: &[&str] = &[
     "missing_csv_column",
     "sqlite",
 ];
+const AGENT_FIELDS: &[&str] = &[
+    "generated_at",
+    "ready",
+    "report_ready",
+    "action_required",
+    "quality",
+    "repair_plan",
+    "next_action",
+    "warnings",
+    "window",
+    "health",
+    "storage_verification",
+    "window_audit",
+    "today_audit",
+    "today_quality",
+    "today_warnings",
+    "summary",
+    "timeline",
+    "timeline_count",
+    "timeline_returned",
+    "timeline_truncated",
+    "summary_limit",
+    "summary_truncated",
+    "sessions",
+    "include_sessions",
+    "open_session",
+    "paths",
+];
+const AGENT_WINDOW_FIELDS: &[&str] = &["mode", "date", "last_minutes", "start", "end"];
+const AGENT_HEALTH_FIELDS: &[&str] = &[
+    "service_running",
+    "service_pid",
+    "service_config",
+    "fresh",
+    "latest_observed_at",
+    "latest_observed_age_seconds",
+    "session_count",
+];
+const AGENT_QUALITY_FIELDS: &[&str] = &[
+    "ready",
+    "coverage_ready",
+    "context_ready",
+    "status",
+    "score",
+    "issue_count",
+    "blocking_issue_count",
+    "context_issue_count",
+    "repair_commands",
+];
+const AGENT_REPAIR_PLAN_FIELDS: &[&str] = &[
+    "candidate_commands",
+    "actionable_commands",
+    "has_actionable_repairs",
+    "actionable_item_count",
+    "residual_item_count",
+    "items",
+];
+const AGENT_REPAIR_ITEM_FIELDS: &[&str] = &[
+    "command",
+    "reason",
+    "issue_count",
+    "scanned",
+    "repairable_count",
+    "actionable",
+];
+const AGENT_NEXT_ACTION_FIELDS: &[&str] = &["kind", "commands"];
 
 #[derive(Debug, Parser)]
 #[command(
@@ -1492,6 +1558,53 @@ fn paths_json_value(store: &LogStore) -> serde_json::Value {
     })
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+struct SchemaField {
+    name: &'static str,
+    #[serde(rename = "type")]
+    field_type: &'static str,
+    required: bool,
+}
+
+fn schema_field(name: &'static str, field_type: &'static str, required: bool) -> SchemaField {
+    SchemaField {
+        name,
+        field_type,
+        required,
+    }
+}
+
+fn agent_field_definitions() -> Vec<SchemaField> {
+    vec![
+        schema_field("generated_at", "rfc3339_datetime", true),
+        schema_field("ready", "boolean", true),
+        schema_field("report_ready", "boolean", true),
+        schema_field("action_required", "boolean", true),
+        schema_field("quality", "object", true),
+        schema_field("repair_plan", "object", true),
+        schema_field("next_action", "object", true),
+        schema_field("warnings", "array<string>", true),
+        schema_field("window", "object", true),
+        schema_field("health", "object", true),
+        schema_field("storage_verification", "object", true),
+        schema_field("window_audit", "object", true),
+        schema_field("today_audit", "object", true),
+        schema_field("today_quality", "object", true),
+        schema_field("today_warnings", "array<string>", true),
+        schema_field("summary", "object", true),
+        schema_field("timeline", "array<object>", true),
+        schema_field("timeline_count", "number", true),
+        schema_field("timeline_returned", "number", true),
+        schema_field("timeline_truncated", "boolean", true),
+        schema_field("summary_limit", "number", true),
+        schema_field("summary_truncated", "boolean", true),
+        schema_field("sessions", "array<object>|null", true),
+        schema_field("include_sessions", "boolean", true),
+        schema_field("open_session", "object|null", true),
+        schema_field("paths", "object", true),
+    ]
+}
+
 fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     let now = Local::now();
     let service_install_binary_requirements = SERVICE_INSTALL_BINARY_REQUIREMENTS;
@@ -1738,52 +1851,14 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "legacy_sessions_path",
                 "hints",
             ],
-            "agent_fields": [
-                {"name": "generated_at", "type": "rfc3339_datetime", "required": true},
-                {"name": "ready", "type": "boolean", "required": true},
-                {"name": "report_ready", "type": "boolean", "required": true},
-                {"name": "action_required", "type": "boolean", "required": true},
-                {"name": "quality", "type": "object", "required": true},
-                {"name": "repair_plan", "type": "object", "required": true},
-                {"name": "warnings", "type": "array<string>", "required": true},
-                {"name": "window", "type": "object", "required": true},
-                {"name": "health", "type": "object", "required": true},
-                {"name": "window_audit", "type": "object", "required": true},
-                {"name": "storage_verification", "type": "object", "required": true},
-                {"name": "today_audit", "type": "object", "required": true},
-                {"name": "today_quality", "type": "object", "required": true},
-                {"name": "today_warnings", "type": "array<string>", "required": true},
-                {"name": "summary", "type": "object", "required": true},
-                {"name": "timeline", "type": "array<object>", "required": true},
-                {"name": "timeline_count", "type": "number", "required": true},
-                {"name": "timeline_returned", "type": "number", "required": true},
-                {"name": "timeline_truncated", "type": "boolean", "required": true},
-                {"name": "summary_limit", "type": "number", "required": true},
-                {"name": "summary_truncated", "type": "boolean", "required": true},
-                {"name": "sessions", "type": "array<object>|null", "required": true},
-                {"name": "include_sessions", "type": "boolean", "required": true},
-                {"name": "open_session", "type": "object|null", "required": true},
-                {"name": "paths", "type": "object", "required": true},
-            ],
-            "agent_quality_fields": [
-                "ready",
-                "coverage_ready",
-                "context_ready",
-                "status",
-                "score",
-                "issue_count",
-                "blocking_issue_count",
-                "context_issue_count",
-                "repair_commands",
-            ],
-            "agent_repair_plan_fields": [
-                "candidate_commands",
-                "actionable_commands",
-                "has_actionable_repairs",
-                "actionable_item_count",
-                "residual_item_count",
-                "items",
-            ],
+            "agent_fields": agent_field_definitions(),
+            "agent_field_names": AGENT_FIELDS,
+            "agent_window_fields": AGENT_WINDOW_FIELDS,
+            "agent_health_fields": AGENT_HEALTH_FIELDS,
+            "agent_quality_fields": AGENT_QUALITY_FIELDS,
+            "agent_repair_plan_fields": AGENT_REPAIR_PLAN_FIELDS,
+            "agent_repair_item_fields": AGENT_REPAIR_ITEM_FIELDS,
+            "agent_next_action_fields": AGENT_NEXT_ACTION_FIELDS,
             "read_commands": [
                 "agent",
                 "audit",
@@ -2202,6 +2277,7 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
     )?;
     let report_ready = ready && repair_plan.actionable_commands.is_empty();
     let action_required = !repair_plan.actionable_commands.is_empty();
+    let next_action = agent_next_action(report_ready, &repair_plan, repair_window);
     let summary = summarize_window(&sessions, window_start, window_end);
     let summary_truncated = summary_rows_truncated(&summary, args.summary_limit);
     let summary = limit_summary(summary, args.summary_limit);
@@ -2225,6 +2301,7 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
             "action_required": action_required,
             "quality": quality,
             "repair_plan": repair_plan,
+            "next_action": next_action,
             "warnings": warnings,
             "window": {
                 "mode": window_mode,
@@ -2271,6 +2348,7 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
         println!("ready: {}", yes_no(ready));
         println!("report_ready: {}", yes_no(report_ready));
         println!("action_required: {}", yes_no(action_required));
+        println!("next_action: {}", next_action.kind);
         println!("quality_ready: {}", yes_no(quality.ready));
         println!("quality_score: {}", quality.score);
         println!("quality_status: {}", quality.status);
@@ -2304,6 +2382,11 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
         if !repair_plan.actionable_commands.is_empty() {
             println!("actionable_repair_commands:");
             for command in repair_plan.actionable_commands {
+                println!("  {command}");
+            }
+        } else if !next_action.commands.is_empty() {
+            println!("next_commands:");
+            for command in next_action.commands {
                 println!("  {command}");
             }
         }
@@ -2760,6 +2843,12 @@ struct AgentRepairPlanItem {
     actionable: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct AgentNextAction {
+    kind: &'static str,
+    commands: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum AgentRepairWindow {
     Date(NaiveDate),
@@ -2952,6 +3041,63 @@ fn agent_repair_plan_item(
         scanned,
         repairable_count,
         actionable: repairable_count > 0,
+    }
+}
+
+fn agent_next_action(
+    report_ready: bool,
+    repair_plan: &AgentRepairPlan,
+    window: AgentRepairWindow,
+) -> AgentNextAction {
+    if !repair_plan.actionable_commands.is_empty() {
+        return AgentNextAction {
+            kind: "repair",
+            commands: repair_plan.actionable_commands.clone(),
+        };
+    }
+
+    if report_ready {
+        return AgentNextAction {
+            kind: "report",
+            commands: agent_report_commands(window),
+        };
+    }
+
+    AgentNextAction {
+        kind: "inspect",
+        commands: agent_inspect_commands(window),
+    }
+}
+
+fn agent_report_commands(window: AgentRepairWindow) -> Vec<String> {
+    match window {
+        AgentRepairWindow::Date(date) => vec![
+            format!("activity_tracker report {date} --json"),
+            format!("activity_tracker audit {date} --json"),
+            format!("activity_tracker logs {date} --json"),
+        ],
+        AgentRepairWindow::LastMinutes(minutes) => vec![
+            format!("activity_tracker query --last-minutes {minutes} --json"),
+            format!("activity_tracker audit --last-minutes {minutes} --json"),
+            format!("activity_tracker inventory --last-minutes {minutes} --limit 20 --json"),
+        ],
+    }
+}
+
+fn agent_inspect_commands(window: AgentRepairWindow) -> Vec<String> {
+    vec![
+        "activity_tracker health --json".to_string(),
+        "activity_tracker doctor --json".to_string(),
+        agent_audit_command(window),
+    ]
+}
+
+fn agent_audit_command(window: AgentRepairWindow) -> String {
+    match window {
+        AgentRepairWindow::Date(date) => format!("activity_tracker audit {date} --json"),
+        AgentRepairWindow::LastMinutes(minutes) => {
+            format!("activity_tracker audit --last-minutes {minutes} --json")
+        }
     }
 }
 
@@ -3271,7 +3417,7 @@ fn active_entity_or_none<P: ActivityProbe>(probe: &P) -> Option<activity_tracker
     match probe.active_entity() {
         Ok(entity) => entity,
         Err(error) => {
-            tracing::warn!(error = %error, "active probe failed");
+            tracing::debug!(error = %error, "active probe failed");
             None
         }
     }
@@ -3281,7 +3427,7 @@ fn idle_seconds_or_none<P: ActivityProbe>(probe: &P) -> Option<f64> {
     match probe.idle_seconds() {
         Ok(seconds) => seconds,
         Err(error) => {
-            tracing::warn!(error = %error, "idle probe failed");
+            tracing::debug!(error = %error, "idle probe failed");
             None
         }
     }
@@ -3861,6 +4007,120 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn schema_agent_field_definitions_match_contract_names() {
+        let names = agent_field_definitions()
+            .iter()
+            .map(|field| field.name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(names.as_slice(), AGENT_FIELDS);
+    }
+
+    #[test]
+    fn agent_field_constants_match_serialized_payloads() -> anyhow::Result<()> {
+        let now = local_datetime(2026, 6, 3, 8, 0, 0)?;
+        let repair_item = AgentRepairPlanItem {
+            command: "activity_tracker repair-mirror --json".to_string(),
+            reason: "storage_mirror",
+            issue_count: 1,
+            scanned: 10,
+            repairable_count: 1,
+            actionable: true,
+        };
+
+        assert_object_keys(
+            serde_json::json!({
+                "generated_at": now,
+                "ready": true,
+                "report_ready": true,
+                "action_required": false,
+                "quality": {},
+                "repair_plan": {},
+                "next_action": {},
+                "warnings": [],
+                "window": {},
+                "health": {},
+                "storage_verification": {},
+                "window_audit": {},
+                "today_audit": {},
+                "today_quality": {},
+                "today_warnings": [],
+                "summary": {},
+                "timeline": [],
+                "timeline_count": 0,
+                "timeline_returned": 0,
+                "timeline_truncated": false,
+                "summary_limit": 12,
+                "summary_truncated": false,
+                "sessions": null,
+                "include_sessions": false,
+                "open_session": null,
+                "paths": {},
+            }),
+            AGENT_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::json!({
+                "mode": "last_minutes",
+                "date": null,
+                "last_minutes": 120,
+                "start": now,
+                "end": now,
+            }),
+            AGENT_WINDOW_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::json!({
+                "service_running": true,
+                "service_pid": 123,
+                "service_config": {},
+                "fresh": true,
+                "latest_observed_at": now,
+                "latest_observed_age_seconds": 0.0,
+                "session_count": 10,
+            }),
+            AGENT_HEALTH_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::to_value(AgentQuality {
+                ready: true,
+                coverage_ready: true,
+                context_ready: true,
+                status: "clean",
+                score: 100,
+                issue_count: 0,
+                blocking_issue_count: 0,
+                context_issue_count: 0,
+                repair_commands: Vec::new(),
+            })?,
+            AGENT_QUALITY_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::to_value(&repair_item)?,
+            AGENT_REPAIR_ITEM_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::to_value(AgentRepairPlan {
+                candidate_commands: vec![repair_item.command.clone()],
+                actionable_commands: vec![repair_item.command.clone()],
+                has_actionable_repairs: true,
+                actionable_item_count: 1,
+                residual_item_count: 0,
+                items: vec![repair_item],
+            })?,
+            AGENT_REPAIR_PLAN_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::to_value(AgentNextAction {
+                kind: "report",
+                commands: agent_report_commands(AgentRepairWindow::LastMinutes(120)),
+            })?,
+            AGENT_NEXT_ACTION_FIELDS,
+        )?;
+        Ok(())
+    }
+
     struct FailingProbe;
 
     impl ActivityProbe for FailingProbe {
@@ -4111,6 +4371,73 @@ mod tests {
             vec!["activity_tracker repair-gaps --from 2026-06-03 --to 2026-06-03 --dry-run --json"]
         );
         Ok(())
+    }
+
+    #[test]
+    fn agent_next_action_suggests_report_commands_when_ready() -> anyhow::Result<()> {
+        let date = parse_date("2026-06-03")?;
+        let plan = AgentRepairPlan {
+            candidate_commands: Vec::new(),
+            actionable_commands: Vec::new(),
+            has_actionable_repairs: false,
+            actionable_item_count: 0,
+            residual_item_count: 0,
+            items: Vec::new(),
+        };
+
+        let action = agent_next_action(true, &plan, AgentRepairWindow::Date(date));
+
+        assert_eq!(action.kind, "report");
+        assert_eq!(
+            action.commands,
+            vec![
+                "activity_tracker report 2026-06-03 --json",
+                "activity_tracker audit 2026-06-03 --json",
+                "activity_tracker logs 2026-06-03 --json",
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn agent_next_action_prefers_actionable_repairs() {
+        let plan = AgentRepairPlan {
+            candidate_commands: Vec::new(),
+            actionable_commands: vec!["activity_tracker repair-mirror --json".to_string()],
+            has_actionable_repairs: true,
+            actionable_item_count: 1,
+            residual_item_count: 0,
+            items: Vec::new(),
+        };
+
+        let action = agent_next_action(false, &plan, AgentRepairWindow::LastMinutes(120));
+
+        assert_eq!(action.kind, "repair");
+        assert_eq!(action.commands, plan.actionable_commands);
+    }
+
+    #[test]
+    fn agent_next_action_suggests_inspection_when_not_ready_without_repairs() {
+        let plan = AgentRepairPlan {
+            candidate_commands: Vec::new(),
+            actionable_commands: Vec::new(),
+            has_actionable_repairs: false,
+            actionable_item_count: 0,
+            residual_item_count: 0,
+            items: Vec::new(),
+        };
+
+        let action = agent_next_action(false, &plan, AgentRepairWindow::LastMinutes(120));
+
+        assert_eq!(action.kind, "inspect");
+        assert_eq!(
+            action.commands,
+            vec![
+                "activity_tracker health --json",
+                "activity_tracker doctor --json",
+                "activity_tracker audit --last-minutes 120 --json",
+            ]
+        );
     }
 
     #[test]

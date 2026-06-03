@@ -2960,7 +2960,7 @@ end tell"#;
     match run_osascript(script) {
         Ok(output) => Ok(parse_active_app_snapshot(&output)),
         Err(error) => {
-            tracing::warn!(error = %error, "active app probe failed");
+            tracing::debug!(error = %error, "active app probe failed");
             Ok(None)
         }
     }

@@ -14,7 +14,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 1. Run `cargo run -- paths --json` to discover storage paths.
 2. Run `cargo run -- schema --json` when an app/tool harness needs the CLI/data contract.
 3. Use `cargo run -- now --json` for cheap current activity polling.
-4. Use `cargo run -- agent --json` as the first AI/reporting hook: readiness, storage verification, `report_ready`, `action_required`, repair plan with actionable/residual item counts, window-scoped quality score/status/scoped candidate repair commands, warnings, window audit with bounded quality issue samples, today's audit/quality for background context, bounded summary, most recent timeline context, open checkpoint, and paths.
+4. Use `cargo run -- agent --json` as the first AI/reporting hook: readiness, storage verification, `report_ready`, `action_required`, repair plan with actionable/residual item counts, `next_action.commands`, window-scoped quality score/status/scoped candidate repair commands, warnings, window audit with bounded quality issue samples, today's audit/quality for background context, bounded summary, most recent timeline context, open checkpoint, and paths.
 5. Use `cargo run -- agent --last-minutes N --json` for rolling auto-report windows, or `cargo run -- agent YYYY-MM-DD --json` for compact day context.
 6. Add `--include-sessions` to `agent` only when raw sessions are necessary.
 7. Use `cargo run -- health --json` before reports when you need the full launchd/storage health payload.
@@ -84,6 +84,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Include import and repair report fields in `schema --json` so agents do not infer JSON payload shapes.
 - Keep `now --json` cheap and suitable for frequent SwiftUI/menu-bar polling; `ready` should require service config validation.
 - Keep `agent --json` explicit about report readiness: `report_ready` should be true only when service binary/config, freshness, storage verification, and window coverage are ready and no actionable repair remains; `action_required` should reflect actionable repairs, while residual non-repairable warnings stay visible in the repair plan and quality fields.
+- Keep `agent.next_action.commands` as the immediate workflow hint for AI/reporting callers: actionable repairs first, report/query commands when ready, inspection commands when readiness is blocked without safe repairs.
 - If JSONL/CSV derived storage verification fails while SQLite is healthy, expose `activity_tracker repair-mirror --json` in `agent.repair_plan.actionable_commands`.
 - Use app identity plus browser URL domains for categories; reclassify stored sessions when mappings change.
 - Keep observed domain mappings current for recurring work tools, communication, AI, writing, research, and development sites.

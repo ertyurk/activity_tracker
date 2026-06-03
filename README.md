@@ -111,6 +111,7 @@ Preferred first call for internal AI/reporting tools:
 
 - service readiness, `report_ready`, and `action_required`
 - repair plan with actionable commands
+- `next_action` with the next repair/report/inspection commands
 - window-scoped quality gate, warnings, and audit
 - today-wide audit context
 - bounded summary and recent timeline context
