@@ -1,5 +1,6 @@
-use std::io::{self, Write};
-use std::path::PathBuf;
+use std::collections::VecDeque;
+use std::io::{self, BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -364,6 +365,8 @@ enum ServiceAction {
     Uninstall,
     /// Print launchd service state.
     Status(OutputArgs),
+    /// Print launchd stdout/stderr log tails.
+    Logs(ServiceLogsArgs),
 }
 
 #[derive(Debug, Args)]
@@ -376,6 +379,14 @@ struct ServiceInstallArgs {
     idle_threshold_seconds: u64,
     #[arg(long)]
     no_load: bool,
+}
+
+#[derive(Debug, Args)]
+struct ServiceLogsArgs {
+    #[arg(long, default_value_t = 80)]
+    lines: usize,
+    #[arg(long)]
+    json: bool,
 }
 
 fn main() -> ExitCode {
@@ -1098,6 +1109,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "query",
                 "report",
                 "schema",
+                "service logs",
                 "service status",
                 "summary",
                 "timeline",
@@ -1111,7 +1123,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "repair-urls",
             ],
             "export_commands": ["export", "import-csv"],
-            "service_commands": ["service install", "service status", "service uninstall"],
+            "service_commands": ["service install", "service logs", "service status", "service uninstall"],
             "quality_issue_kinds": [
                 "missing_title",
                 "browser_missing_url",
@@ -1572,6 +1584,7 @@ fn run_service(store: &LogStore, command: ServiceCommand) -> Result<()> {
             Ok(())
         }
         ServiceAction::Status(args) => print_service_status(args),
+        ServiceAction::Logs(args) => print_service_logs(store, args),
     }
 }
 
@@ -1583,6 +1596,51 @@ fn print_service_status(args: OutputArgs) -> Result<()> {
         io::stdout().flush()?;
         Ok(())
     }
+}
+
+fn print_service_logs(store: &LogStore, args: ServiceLogsArgs) -> Result<()> {
+    let stdout_path = store.logs_dir().join("launchd.out.log");
+    let stderr_path = store.logs_dir().join("launchd.err.log");
+    let stdout = tail_file_lines(&stdout_path, args.lines)?;
+    let stderr = tail_file_lines(&stderr_path, args.lines)?;
+
+    if args.json {
+        let value = serde_json::json!({
+            "generated_at": Local::now(),
+            "lines": args.lines,
+            "stdout_path": stdout_path,
+            "stderr_path": stderr_path,
+            "stdout": stdout,
+            "stderr": stderr,
+        });
+        print_json(&value)
+    } else {
+        println!("stdout: {}", stdout_path.display());
+        for line in stdout {
+            println!("{line}");
+        }
+        println!("stderr: {}", stderr_path.display());
+        for line in stderr {
+            println!("{line}");
+        }
+        Ok(())
+    }
+}
+
+fn tail_file_lines(path: &Path, limit: usize) -> Result<Vec<String>> {
+    if limit == 0 || !path.exists() {
+        return Ok(Vec::new());
+    }
+    let file = std::fs::File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut lines = VecDeque::with_capacity(limit);
+    for line in reader.lines() {
+        if lines.len() == limit {
+            lines.pop_front();
+        }
+        lines.push_back(line?);
+    }
+    Ok(lines.into_iter().collect())
 }
 
 fn print_summary_text(date: Option<NaiveDate>, summary: &activity_tracker::ActivitySummary) {
@@ -2220,6 +2278,21 @@ mod tests {
             quality.repair_commands,
             vec!["activity_tracker repair-gaps --from 2026-06-03 --to 2026-06-03 --dry-run --json"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn tail_file_lines_returns_bounded_tail() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("launchd.out.log");
+        std::fs::write(&path, "one\ntwo\nthree\n")?;
+
+        assert_eq!(
+            tail_file_lines(&path, 2)?,
+            vec![String::from("two"), String::from("three")]
+        );
+        assert!(tail_file_lines(&path, 0)?.is_empty());
+        assert!(tail_file_lines(&dir.path().join("missing.log"), 2)?.is_empty());
         Ok(())
     }
 

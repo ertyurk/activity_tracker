@@ -40,6 +40,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - Background mode should use `launchd` via `activity_tracker service install`.
 - `service install` should persist configured `--interval-seconds` and `--idle-threshold-seconds` into LaunchAgent arguments.
 - `service status --json` should expose normalized program, arguments, stdout path, and stderr path.
+- `service logs --json` should expose bounded launchd stdout/stderr tails with paths for service diagnostics.
 - CLI output should support plain text for humans and `--json` for agents; quality commands should expose both time coverage and context richness.
 
 ## Rust Rules
@@ -65,6 +66,7 @@ cargo run -- paths --json
 cargo run -- schema --json
 cargo run -- now --json
 cargo run -- service status --json
+cargo run -- service logs --lines 80 --json
 cargo run -- day 2026-06-03 --json
 cargo run -- report 2026-06-03 --json
 cargo run -- timeline 2026-06-03 --json

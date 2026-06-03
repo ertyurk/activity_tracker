@@ -63,6 +63,7 @@ activity_tracker health --json
 activity_tracker doctor --json
 activity_tracker verify --json
 activity_tracker service status --json
+activity_tracker service logs --lines 80 --json
 activity_tracker day 2026-06-03 --json
 activity_tracker report 2026-06-03 --json
 activity_tracker timeline 2026-06-03 --json
@@ -106,6 +107,7 @@ Windowed summaries and timelines are clipped to the requested day/range/last-min
 `now --json` is the cheapest current-state poll for SwiftUI/menu-bar clients: service running state, freshness, checkpoint recency, current provisional session, open checkpoint, latest completed session, and paths.
 `verify --json` runs storage integrity checks: SQLite integrity, SQLite session count, JSONL mirror readability, JSONL session count, and mirror count sync.
 `service status --json` reports launchd load/running state, PID, program, arguments, and log paths without requiring agents to parse `launchctl` text.
+`service logs --json` reports bounded launchd stdout/stderr tails with paths so agents can inspect service errors without shelling into log files.
 `schema --json` reports the stable CLI/data contract: storage paths, default thresholds, activity types, known categories, session fields, supported window args, filters, read commands, repair commands, service commands, quality issue kinds, and local-privacy flags.
 `reclassify` recomputes categories from current app and browser-domain rules, useful after improving category mappings.
 `reclassify`, `repair-gaps`, `repair-titles`, `repair-urls`, and `repair-context` accept optional `--from`/`--to`, `--since`/`--until`, or `--last-minutes` windows so an agent can dry-run and apply repairs to the same audited window instead of touching all history.
@@ -181,6 +183,7 @@ Day summaries include sessions overlapping that local day and clip cross-midnigh
 activity_tracker service install
 activity_tracker service install --interval-seconds 2 --idle-threshold-seconds 300
 activity_tracker service status --json
+activity_tracker service logs --lines 80 --json
 activity_tracker service uninstall
 ```
 
