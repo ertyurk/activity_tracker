@@ -20,6 +20,7 @@ pub const DEFAULT_PROBE_MISS_TOLERANCE: u8 = 3;
 pub const DEFAULT_RECENT_CHECKPOINT_SECONDS: u64 = 30;
 pub const DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS: f64 = 30.0;
 pub const DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS: u64 = 60;
+pub const MAX_AUDIT_QUALITY_ISSUES: usize = 50;
 pub const SERVICE_LABEL: &str = "com.local.activity-tracker";
 pub const IDLE_BUNDLE_ID: &str = "local.activity_tracker.idle";
 pub const UNTRACKED_BUNDLE_ID: &str = "local.activity_tracker.untracked";
@@ -258,6 +259,7 @@ pub struct ActivityAudit {
     pub browser_missing_url_by_title: Vec<AuditQualityRow>,
     pub browser_blank_tab_by_app: Vec<AuditQualityRow>,
     pub uncategorized_by_app: Vec<AuditQualityRow>,
+    pub quality_issues: Vec<AuditQualityIssue>,
     pub total_gap_seconds: f64,
     pub longest_gap_seconds: f64,
     pub gaps: Vec<AuditGap>,
@@ -269,6 +271,28 @@ pub struct ActivityAudit {
 pub struct AuditQualityRow {
     pub name: String,
     pub count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditQualityIssueKind {
+    MissingTitle,
+    BrowserMissingUrl,
+    Uncategorized,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditQualityIssue {
+    pub kind: AuditQualityIssueKind,
+    pub start_time: DateTime<Local>,
+    pub end_time: DateTime<Local>,
+    pub duration_seconds: f64,
+    pub app_name: String,
+    pub bundle_id: String,
+    pub title: Option<String>,
+    pub category: String,
+    pub url: Option<String>,
+    pub activity_type: ActivityType,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1442,6 +1466,7 @@ pub fn audit_sessions(sessions: &[UsageSession], gap_threshold_seconds: f64) -> 
             .filter(|session| session.category == "Uncategorized")
             .map(app_identity),
     );
+    let quality_issues = quality_issue_rows(&sorted, MAX_AUDIT_QUALITY_ISSUES);
     let gap_threshold_seconds = gap_threshold_seconds.max(0.0);
 
     for pair in sorted.windows(2) {
@@ -1503,6 +1528,7 @@ pub fn audit_sessions(sessions: &[UsageSession], gap_threshold_seconds: f64) -> 
         browser_missing_url_by_title,
         browser_blank_tab_by_app,
         uncategorized_by_app,
+        quality_issues,
         total_gap_seconds,
         longest_gap_seconds,
         gaps,
@@ -2392,6 +2418,55 @@ where
         .collect();
     rows.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
     rows
+}
+
+fn quality_issue_rows(sessions: &[UsageSession], limit: usize) -> Vec<AuditQualityIssue> {
+    let mut rows = Vec::new();
+    for session in sessions {
+        if session_missing_title(session) {
+            rows.push(quality_issue_row(
+                AuditQualityIssueKind::MissingTitle,
+                session,
+            ));
+        }
+        if rows.len() >= limit {
+            break;
+        }
+        if browser_missing_url(session) {
+            rows.push(quality_issue_row(
+                AuditQualityIssueKind::BrowserMissingUrl,
+                session,
+            ));
+        }
+        if rows.len() >= limit {
+            break;
+        }
+        if session.category == "Uncategorized" {
+            rows.push(quality_issue_row(
+                AuditQualityIssueKind::Uncategorized,
+                session,
+            ));
+        }
+        if rows.len() >= limit {
+            break;
+        }
+    }
+    rows
+}
+
+fn quality_issue_row(kind: AuditQualityIssueKind, session: &UsageSession) -> AuditQualityIssue {
+    AuditQualityIssue {
+        kind,
+        start_time: session.start_time,
+        end_time: session.end_time,
+        duration_seconds: session.duration_seconds,
+        app_name: session.app_name.clone(),
+        bundle_id: session.bundle_id.clone(),
+        title: session.title.clone(),
+        category: session.category.clone(),
+        url: session.url.clone(),
+        activity_type: session.activity_type,
+    }
 }
 
 fn app_identity(session: &UsageSession) -> String {
@@ -4013,6 +4088,26 @@ mod tests {
                 .first()
                 .map(|row| (row.name.as_str(), row.count)),
             Some(("Google Chrome (com.google.Chrome)", 1))
+        );
+        let issue_kinds = audit
+            .quality_issues
+            .iter()
+            .map(|issue| issue.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            issue_kinds,
+            vec![
+                AuditQualityIssueKind::MissingTitle,
+                AuditQualityIssueKind::BrowserMissingUrl,
+                AuditQualityIssueKind::Uncategorized,
+            ]
+        );
+        assert_eq!(
+            audit
+                .quality_issues
+                .first()
+                .map(|issue| issue.url.as_deref()),
+            Some(None)
         );
         Ok(())
     }

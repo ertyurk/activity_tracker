@@ -7,13 +7,14 @@ use std::thread;
 use std::time::Duration;
 
 use activity_tracker::{
-    ActivityProbe, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS, DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS,
-    DEFAULT_IDLE_THRESHOLD_SECONDS, DEFAULT_INTERVAL_SECONDS, DEFAULT_PROBE_MISS_TOLERANCE,
-    DEFAULT_RECENT_CHECKPOINT_SECONDS, LogStore, MacOsProbe, ProbeMissStabilizer,
-    QueryTimeWindowInput, Result, TrackerError, TrackerState, UsageSession, audit_sessions,
-    day_bounds, filter_sessions, format_seconds, install_launch_agent, legacy_data_dir,
-    legacy_sessions_path, parse_date, query_time_window, service_status, service_status_report,
-    summarize_all, summarize_day, timeline_blocks, uninstall_launch_agent,
+    ActivityAudit, ActivityProbe, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS,
+    DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS, DEFAULT_IDLE_THRESHOLD_SECONDS,
+    DEFAULT_INTERVAL_SECONDS, DEFAULT_PROBE_MISS_TOLERANCE, DEFAULT_RECENT_CHECKPOINT_SECONDS,
+    LogStore, MacOsProbe, ProbeMissStabilizer, QueryTimeWindowInput, Result, TrackerError,
+    TrackerState, UsageSession, audit_sessions, day_bounds, filter_sessions, format_seconds,
+    install_launch_agent, legacy_data_dir, legacy_sessions_path, parse_date, query_time_window,
+    service_status, service_status_report, summarize_all, summarize_day, timeline_blocks,
+    uninstall_launch_agent,
 };
 use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -769,6 +770,7 @@ fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
     let healthy = storage.fresh && service.running;
 
     if args.json {
+        let today_audit = compact_audit(audit.clone());
         let value = serde_json::json!({
             "generated_at": now,
             "date": date,
@@ -776,7 +778,7 @@ fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
             "fresh": storage.fresh,
             "service": service,
             "storage": storage,
-            "today_audit": audit,
+            "today_audit": today_audit,
             "gap_threshold_seconds": args.gap_threshold_seconds.max(0.0),
             "paths": {
                 "root": store.root(),
@@ -904,6 +906,7 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
     };
 
     if args.json {
+        let today_audit = compact_audit(today_audit.clone());
         let value = serde_json::json!({
             "generated_at": now,
             "ready": ready,
@@ -967,6 +970,11 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
         }
         Ok(())
     }
+}
+
+fn compact_audit(mut audit: ActivityAudit) -> ActivityAudit {
+    audit.quality_issues.clear();
+    audit
 }
 
 fn doctor(store: &LogStore, args: OutputArgs) -> Result<()> {
