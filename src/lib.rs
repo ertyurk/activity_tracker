@@ -1569,11 +1569,13 @@ pub fn category_for(bundle_id: &str, name: &str) -> String {
         | "com.cmuxterm.app"
         | "dev.zed.Zed" => "Development",
         "com.apple.mail" | "com.microsoft.Outlook" => "Email",
-        "com.figma.Desktop" | "com.bohemiancoding.sketch3" => "Design",
+        "com.figma.Desktop" | "com.bohemiancoding.sketch3" | "dev.pencil.desktop" => "Design",
         "com.microsoft.teams2"
+        | "net.whatsapp.WhatsApp"
         | "com.tinyspeck.slackmacgap"
         | "com.apple.MobileSMS"
         | "us.zoom.xos" => "Communication",
+        "com.electron.wispr-flow" => "Productivity",
         "com.apple.Notes" | "com.apple.Preview" | "com.apple.TextEdit" | "com.notion.id" => {
             "Writing"
         }
@@ -3503,12 +3505,21 @@ mod tests {
     #[test]
     fn category_covers_observed_apps() {
         assert_eq!(category_for("com.figma.Desktop", "Figma"), "Design");
+        assert_eq!(category_for("dev.pencil.desktop", "Pencil"), "Design");
         assert_eq!(category_for("com.apple.Preview", "Preview"), "Writing");
         assert_eq!(
             category_for("com.apple.systempreferences", "System Settings"),
             "System"
         );
         assert_eq!(category_for("com.cmuxterm.app", "cmux"), "Development");
+        assert_eq!(
+            category_for("net.whatsapp.WhatsApp", "WhatsApp"),
+            "Communication"
+        );
+        assert_eq!(
+            category_for("com.electron.wispr-flow", "Wispr Flow"),
+            "Productivity"
+        );
     }
 
     #[test]
