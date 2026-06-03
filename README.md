@@ -75,13 +75,15 @@ activity_tracker export --date 2026-06-03 --format csv
 activity_tracker export --date 2026-06-03 --format jsonl
 activity_tracker import-csv ~/Desktop/usage_stats.csv --dry-run --json
 activity_tracker reclassify --dry-run --json
+activity_tracker reclassify --from 2026-06-03 --to 2026-06-03 --dry-run --json
 activity_tracker repair-gaps --dry-run --json
 activity_tracker repair-titles --dry-run --json
 activity_tracker repair-urls --dry-run --json
 activity_tracker repair-context --dry-run --json
+activity_tracker repair-context --last-minutes 120 --dry-run --json
 ```
 
-`agent --json` is the preferred first call for internal AI/reporting tools: it returns service readiness, a window-scoped `quality` gate with score/status/repair commands, freshness, warnings, window audit with bounded quality issue samples, today's audit/quality for background context, bounded summary/timeline context, open checkpoint, and paths. It defaults to the last 120 minutes, top 12 summary rows, and the 20 most recent timeline blocks; pass a date for one day, tune `--summary-limit`/`--timeline-limit`, or add `--include-sessions` when a tool needs raw sessions.
+`agent --json` is the preferred first call for internal AI/reporting tools: it returns service readiness, a window-scoped `quality` gate with score/status/scoped repair commands, freshness, warnings, window audit with bounded quality issue samples, today's audit/quality for background context, bounded summary/timeline context, open checkpoint, and paths. It defaults to the last 120 minutes, top 12 summary rows, and the 20 most recent timeline blocks; pass a date for one day, tune `--summary-limit`/`--timeline-limit`, or add `--include-sessions` when a tool needs raw sessions.
 `report --json` is the preferred full daily payload for AI agents: it includes the day summary, raw sessions, current open-session checkpoint, provisional active session, and storage paths. `query --json` is the preferred cross-day/all-history search payload: it accepts optional `--from`/`--to` local dates, precise RFC3339 `--since`/`--until` timestamps, or `--last-minutes` for auto-report windows, plus the same app/title/category/domain/activity-type filters as `logs`, and returns summary, compact timeline, raw sessions, filters, and open checkpoint.
 `day`, `logs`, `query`, `summary`, and `report` include the active open session when it overlaps the query; exports stay based on completed sessions.
 `timeline --json` returns compact ordered blocks grouped by app/domain/category so agents can write reports without reading every raw session.
@@ -89,6 +91,7 @@ activity_tracker repair-context --dry-run --json
 `health --json` is the cheap service substrate check for agents: launchd state, storage freshness, latest observed activity age, open checkpoint, paths, and today's audit/quality counts and breakdowns.
 `service status --json` reports launchd load/running state and PID without requiring agents to parse `launchctl` text.
 `reclassify` recomputes categories from current app and browser-domain rules, useful after improving category mappings.
+`reclassify`, `repair-gaps`, `repair-titles`, `repair-urls`, and `repair-context` accept optional `--from`/`--to`, `--since`/`--until`, or `--last-minutes` windows so an agent can dry-run and apply repairs to the same audited window instead of touching all history.
 `repair-gaps` converts audited gaps in completed logs into explicit `activity_type: "untracked"` sessions so missing time stays visible instead of disappearing from totals.
 `repair-titles` backfills native-app title gaps with the app name when macOS exposes only app-level context, and repairs browser titles only when the exact URL has one unique observed title elsewhere in the log.
 `repair-urls` canonicalizes safe URL-only fixes such as known browser blank-tab URLs and missing URLs surrounded by blank-tab samples to `about:newtab`.

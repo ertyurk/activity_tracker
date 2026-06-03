@@ -12,7 +12,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 ## Query Workflow
 
 1. Run `cargo run -- paths --json` to discover storage paths.
-2. Use `cargo run -- agent --json` as the first AI/reporting hook: readiness, window-scoped quality score/status/repair commands, warnings, window audit with bounded quality issue samples, today's audit/quality for background context, bounded summary, most recent timeline context, open checkpoint, and paths.
+2. Use `cargo run -- agent --json` as the first AI/reporting hook: readiness, window-scoped quality score/status/scoped repair commands, warnings, window audit with bounded quality issue samples, today's audit/quality for background context, bounded summary, most recent timeline context, open checkpoint, and paths.
 3. Use `cargo run -- agent --last-minutes N --json` for rolling auto-report windows, or `cargo run -- agent YYYY-MM-DD --json` for compact day context.
 4. Add `--include-sessions` to `agent` only when raw sessions are necessary.
 5. Use `cargo run -- health --json` before reports when you need the full launchd/storage health payload.
@@ -32,6 +32,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 19. After improving title capture, run `cargo run -- repair-titles --dry-run --json`, then rerun without `--dry-run` to backfill native app titles and browser titles whose exact URL has one unique observed title.
 20. After improving URL normalization, run `cargo run -- repair-urls --dry-run --json`, then rerun without `--dry-run` to canonicalize safe URL-only fixes such as known or surrounded browser blank tabs.
 21. After exposing browser context mismatches or missing browser context, run `cargo run -- repair-context --dry-run --json`, then rerun without `--dry-run` only for high-confidence neighbor or exact-URL repairs.
+22. Prefer the scoped repair commands returned by `agent.quality.repair_commands`; otherwise add the same `--from`/`--to`, `--since`/`--until`, or `--last-minutes` window used for the audit.
 
 ## Operations
 
@@ -43,9 +44,11 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Background status: `cargo run -- service status --json`
 - Background remove: `cargo run -- service uninstall`
 - CSV import: `cargo run -- import-csv ~/Desktop/usage_stats.csv --json`
+- Scoped reclassify: `cargo run -- reclassify --from 2026-06-03 --to 2026-06-03 --dry-run --json`
 - Title repair: `cargo run -- repair-titles --dry-run --json`
 - URL repair: `cargo run -- repair-urls --dry-run --json`
 - Context repair: `cargo run -- repair-context --dry-run --json`
+- Scoped context repair: `cargo run -- repair-context --last-minutes 120 --dry-run --json`
 
 ## Implementation Rules
 
@@ -60,6 +63,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Stabilize brief same-browser title/URL misses from current tab context only when observed context is missing or matches; never fill across conflicting titles or URLs.
 - Keep suspicious browser title/URL mismatches visible in audit output so agents do not over-trust old mixed-context rows.
 - Use `repair-context` to fix only high-confidence browser context mismatches and missing browser title/URL fields; do not infer from weak title/domain guesses alone.
+- Keep `reclassify`, `repair-gaps`, `repair-titles`, `repair-urls`, and `repair-context` scoped to the audited window when an agent is fixing a specific report window.
 - For native apps, collect app identity and title fallback from the same foreground probe sample: window title first, then app title/name when macOS exposes no window.
 - Use `repair-titles` to backfill native app title gaps and exact-URL browser title gaps after title capture changes; do not mask browser misses with synthetic titles.
 - Use `repair-urls` to canonicalize known or blank-tab-surrounded URLs; do not infer ordinary missing browser URLs from surrounding sessions.

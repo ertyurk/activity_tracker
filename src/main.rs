@@ -10,11 +10,11 @@ use activity_tracker::{
     ActivityAudit, ActivityProbe, BrowserContextStabilizer, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS,
     DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS, DEFAULT_IDLE_THRESHOLD_SECONDS,
     DEFAULT_INTERVAL_SECONDS, DEFAULT_PROBE_MISS_TOLERANCE, DEFAULT_RECENT_CHECKPOINT_SECONDS,
-    LogStore, MacOsProbe, ProbeMissStabilizer, QueryTimeWindowInput, Result, TrackerError,
-    TrackerState, UsageSession, audit_sessions, day_bounds, filter_sessions, format_seconds,
-    install_launch_agent, legacy_data_dir, legacy_sessions_path, parse_date, query_time_window,
-    service_status, service_status_report, summarize_all, summarize_day, timeline_blocks,
-    uninstall_launch_agent,
+    LogStore, MacOsProbe, ProbeMissStabilizer, QueryTimeWindow, QueryTimeWindowInput, Result,
+    TrackerError, TrackerState, UsageSession, audit_sessions, day_bounds, filter_sessions,
+    format_seconds, install_launch_agent, legacy_data_dir, legacy_sessions_path, parse_date,
+    query_time_window, service_status, service_status_report, summarize_all, summarize_day,
+    timeline_blocks, uninstall_launch_agent,
 };
 use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -142,6 +142,20 @@ struct QueryArgs {
     json: bool,
 }
 
+#[derive(Debug, Args, Clone, Default)]
+struct RepairWindowArgs {
+    #[arg(long)]
+    from: Option<String>,
+    #[arg(long)]
+    to: Option<String>,
+    #[arg(long)]
+    since: Option<String>,
+    #[arg(long)]
+    until: Option<String>,
+    #[arg(long)]
+    last_minutes: Option<u64>,
+}
+
 #[derive(Debug, Args)]
 struct LogsArgs {
     date: Option<String>,
@@ -222,6 +236,8 @@ struct ImportCsvArgs {
 
 #[derive(Debug, Args)]
 struct ReclassifyArgs {
+    #[command(flatten)]
+    window: RepairWindowArgs,
     #[arg(long)]
     dry_run: bool,
     #[arg(long)]
@@ -230,6 +246,8 @@ struct ReclassifyArgs {
 
 #[derive(Debug, Args)]
 struct RepairGapsArgs {
+    #[command(flatten)]
+    window: RepairWindowArgs,
     #[arg(long, default_value_t = DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS)]
     gap_threshold_seconds: f64,
     #[arg(long)]
@@ -240,6 +258,8 @@ struct RepairGapsArgs {
 
 #[derive(Debug, Args)]
 struct RepairTitlesArgs {
+    #[command(flatten)]
+    window: RepairWindowArgs,
     #[arg(long)]
     dry_run: bool,
     #[arg(long)]
@@ -248,6 +268,8 @@ struct RepairTitlesArgs {
 
 #[derive(Debug, Args)]
 struct RepairUrlsArgs {
+    #[command(flatten)]
+    window: RepairWindowArgs,
     #[arg(long)]
     dry_run: bool,
     #[arg(long)]
@@ -256,6 +278,8 @@ struct RepairUrlsArgs {
 
 #[derive(Debug, Args)]
 struct RepairContextArgs {
+    #[command(flatten)]
+    window: RepairWindowArgs,
     #[arg(long)]
     dry_run: bool,
     #[arg(long)]
@@ -700,10 +724,13 @@ fn import_csv(store: &LogStore, args: ImportCsvArgs) -> Result<()> {
 }
 
 fn reclassify(store: &LogStore, args: ReclassifyArgs) -> Result<()> {
-    let report = store.reclassify_sessions(args.dry_run)?;
+    let now = Local::now();
+    let window = repair_window(&args.window, now)?;
+    let report = store.reclassify_sessions_in_window(window.start, window.end, args.dry_run)?;
     if args.json {
-        print_json(&report)
+        print_windowed_json(&report, &window, now)
     } else {
+        print_window_text(&window);
         println!("scanned: {}", report.scanned);
         println!("changed: {}", report.changed);
         println!("dry_run: {}", yes_no(report.dry_run));
@@ -712,10 +739,18 @@ fn reclassify(store: &LogStore, args: ReclassifyArgs) -> Result<()> {
 }
 
 fn repair_gaps(store: &LogStore, args: RepairGapsArgs) -> Result<()> {
-    let report = store.repair_gaps(args.gap_threshold_seconds, args.dry_run)?;
+    let now = Local::now();
+    let window = repair_window(&args.window, now)?;
+    let report = store.repair_gaps_in_window(
+        window.start,
+        window.end,
+        args.gap_threshold_seconds,
+        args.dry_run,
+    )?;
     if args.json {
-        print_json(&report)
+        print_windowed_json(&report, &window, now)
     } else {
+        print_window_text(&window);
         println!("scanned: {}", report.scanned);
         println!("gaps_found: {}", report.gaps_found);
         println!("repaired: {}", report.repaired);
@@ -725,10 +760,13 @@ fn repair_gaps(store: &LogStore, args: RepairGapsArgs) -> Result<()> {
 }
 
 fn repair_titles(store: &LogStore, args: RepairTitlesArgs) -> Result<()> {
-    let report = store.repair_titles(args.dry_run)?;
+    let now = Local::now();
+    let window = repair_window(&args.window, now)?;
+    let report = store.repair_titles_in_window(window.start, window.end, args.dry_run)?;
     if args.json {
-        print_json(&report)
+        print_windowed_json(&report, &window, now)
     } else {
+        print_window_text(&window);
         println!("scanned: {}", report.scanned);
         println!("repaired: {}", report.repaired);
         println!("native_repaired: {}", report.native_repaired);
@@ -739,10 +777,13 @@ fn repair_titles(store: &LogStore, args: RepairTitlesArgs) -> Result<()> {
 }
 
 fn repair_urls(store: &LogStore, args: RepairUrlsArgs) -> Result<()> {
-    let report = store.repair_urls(args.dry_run)?;
+    let now = Local::now();
+    let window = repair_window(&args.window, now)?;
+    let report = store.repair_urls_in_window(window.start, window.end, args.dry_run)?;
     if args.json {
-        print_json(&report)
+        print_windowed_json(&report, &window, now)
     } else {
+        print_window_text(&window);
         println!("scanned: {}", report.scanned);
         println!("repaired: {}", report.repaired);
         println!("blank_tab_urls: {}", report.blank_tab_urls);
@@ -753,10 +794,13 @@ fn repair_urls(store: &LogStore, args: RepairUrlsArgs) -> Result<()> {
 }
 
 fn repair_context(store: &LogStore, args: RepairContextArgs) -> Result<()> {
-    let report = store.repair_context(args.dry_run)?;
+    let now = Local::now();
+    let window = repair_window(&args.window, now)?;
+    let report = store.repair_context_in_window(window.start, window.end, args.dry_run)?;
     if args.json {
-        print_json(&report)
+        print_windowed_json(&report, &window, now)
     } else {
+        print_window_text(&window);
         println!("scanned: {}", report.scanned);
         println!("mismatches_found: {}", report.mismatches_found);
         println!("missing_titles_found: {}", report.missing_titles_found);
@@ -901,52 +945,61 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
     let today_sessions =
         store.sessions_for_day_with_open(today, now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
     let today_audit = audit_sessions(&today_sessions, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS);
-    let today_quality = agent_quality(&today_audit);
+    let today_quality = agent_quality(&today_audit, AgentRepairWindow::Date(today));
     let today_warnings = agent_warnings(&service, &storage, &today_audit);
 
-    let (window_mode, window_date, window_last_minutes, window_start, window_end, sessions) =
-        if let Some(date_input) = args.date.as_deref() {
-            let date = parse_date(date_input)?;
-            let (start, end) = day_bounds(date)?;
-            (
-                "day",
-                Some(date),
-                None,
-                Some(start),
-                Some(end),
-                store.sessions_for_day_with_open(date, now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?,
-            )
-        } else {
-            let last_minutes = args.last_minutes.unwrap_or(DEFAULT_AGENT_LAST_MINUTES);
-            let window = query_time_window(
-                QueryTimeWindowInput {
-                    from: None,
-                    to: None,
-                    since: None,
-                    until: None,
-                    last_minutes: Some(last_minutes),
-                },
-                now,
-            )?;
-            (
-                "last_minutes",
-                None,
-                Some(last_minutes),
+    let (
+        window_mode,
+        window_date,
+        window_last_minutes,
+        window_start,
+        window_end,
+        repair_window,
+        sessions,
+    ) = if let Some(date_input) = args.date.as_deref() {
+        let date = parse_date(date_input)?;
+        let (start, end) = day_bounds(date)?;
+        (
+            "day",
+            Some(date),
+            None,
+            Some(start),
+            Some(end),
+            AgentRepairWindow::Date(date),
+            store.sessions_for_day_with_open(date, now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?,
+        )
+    } else {
+        let last_minutes = args.last_minutes.unwrap_or(DEFAULT_AGENT_LAST_MINUTES);
+        let window = query_time_window(
+            QueryTimeWindowInput {
+                from: None,
+                to: None,
+                since: None,
+                until: None,
+                last_minutes: Some(last_minutes),
+            },
+            now,
+        )?;
+        (
+            "last_minutes",
+            None,
+            Some(last_minutes),
+            window.start,
+            window.end,
+            AgentRepairWindow::LastMinutes(last_minutes),
+            store.sessions_in_window_with_open(
                 window.start,
                 window.end,
-                store.sessions_in_window_with_open(
-                    window.start,
-                    window.end,
-                    now,
-                    DEFAULT_RECENT_CHECKPOINT_SECONDS,
-                )?,
-            )
-        };
+                now,
+                DEFAULT_RECENT_CHECKPOINT_SECONDS,
+            )?,
+        )
+    };
 
     let window_audit = audit_sessions(&sessions, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS);
     let ready = agent_ready(&service, &storage, &window_audit);
     let warnings = agent_warnings(&service, &storage, &window_audit);
-    let quality = agent_quality(&window_audit);
+    let quality = agent_quality(&window_audit, repair_window);
     let summary = summarize_all(&sessions);
     let summary_truncated = summary_rows_truncated(&summary, args.summary_limit);
     let summary = limit_summary(summary, args.summary_limit);
@@ -1175,7 +1228,13 @@ struct AgentQuality {
     issue_count: usize,
     blocking_issue_count: usize,
     context_issue_count: usize,
-    repair_commands: Vec<&'static str>,
+    repair_commands: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AgentRepairWindow {
+    Date(NaiveDate),
+    LastMinutes(u64),
 }
 
 fn agent_ready(
@@ -1190,7 +1249,10 @@ fn agent_ready(
         && audit.invalid_session_count == 0
 }
 
-fn agent_quality(audit: &activity_tracker::ActivityAudit) -> AgentQuality {
+fn agent_quality(
+    audit: &activity_tracker::ActivityAudit,
+    repair_window: AgentRepairWindow,
+) -> AgentQuality {
     let blocking_issue_count = audit.gap_count + audit.overlap_count + audit.invalid_session_count;
     let context_issue_count = audit.uncategorized_session_count
         + audit.browser_missing_url_count
@@ -1216,22 +1278,22 @@ fn agent_quality(audit: &activity_tracker::ActivityAudit) -> AgentQuality {
     let score = 100usize.saturating_sub(penalty.min(100)) as u8;
     let mut repair_commands = Vec::new();
     if audit.gap_count > 0 {
-        repair_commands.push("activity_tracker repair-gaps --dry-run --json");
+        repair_commands.push(agent_repair_command("repair-gaps", repair_window));
     }
     if audit.uncategorized_session_count > 0 {
-        repair_commands.push("activity_tracker reclassify --dry-run --json");
+        repair_commands.push(agent_repair_command("reclassify", repair_window));
     }
     if audit.missing_title_count > 0 {
-        repair_commands.push("activity_tracker repair-titles --dry-run --json");
+        repair_commands.push(agent_repair_command("repair-titles", repair_window));
     }
     if audit.browser_missing_url_count > 0 {
-        repair_commands.push("activity_tracker repair-urls --dry-run --json");
+        repair_commands.push(agent_repair_command("repair-urls", repair_window));
     }
     if audit.browser_context_mismatch_count > 0
         || audit.missing_title_count > 0
         || audit.browser_missing_url_count > 0
     {
-        repair_commands.push("activity_tracker repair-context --dry-run --json");
+        repair_commands.push(agent_repair_command("repair-context", repair_window));
     }
 
     AgentQuality {
@@ -1244,6 +1306,17 @@ fn agent_quality(audit: &activity_tracker::ActivityAudit) -> AgentQuality {
         blocking_issue_count,
         context_issue_count,
         repair_commands,
+    }
+}
+
+fn agent_repair_command(command: &str, window: AgentRepairWindow) -> String {
+    match window {
+        AgentRepairWindow::Date(date) => {
+            format!("activity_tracker {command} --from {date} --to {date} --dry-run --json")
+        }
+        AgentRepairWindow::LastMinutes(minutes) => {
+            format!("activity_tracker {command} --last-minutes {minutes} --dry-run --json")
+        }
     }
 }
 
@@ -1326,6 +1399,52 @@ fn limit_summary_rows(
     limit: usize,
 ) -> Vec<activity_tracker::SummaryRow> {
     rows.into_iter().take(limit).collect()
+}
+
+fn repair_window(args: &RepairWindowArgs, now: chrono::DateTime<Local>) -> Result<QueryTimeWindow> {
+    query_time_window(
+        QueryTimeWindowInput {
+            from: args.from.as_deref(),
+            to: args.to.as_deref(),
+            since: args.since.as_deref(),
+            until: args.until.as_deref(),
+            last_minutes: args.last_minutes,
+        },
+        now,
+    )
+}
+
+fn print_windowed_json<T: Serialize>(
+    report: &T,
+    window: &QueryTimeWindow,
+    generated_at: chrono::DateTime<Local>,
+) -> Result<()> {
+    let mut value = serde_json::to_value(report)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("generated_at".to_string(), serde_json::json!(generated_at));
+        object.insert(
+            "window".to_string(),
+            serde_json::json!({
+                "from": window.from,
+                "to": window.to,
+                "since": window.since,
+                "until": window.until,
+                "last_minutes": window.last_minutes,
+                "start": window.start,
+                "end": window.end,
+            }),
+        );
+    }
+    print_json(&value)
+}
+
+fn print_window_text(window: &QueryTimeWindow) {
+    match (window.start, window.end) {
+        (None, None) => println!("window: all"),
+        (Some(start), Some(end)) => println!("window: {start} -> {end}"),
+        (Some(start), None) => println!("window: {start} -> all"),
+        (None, Some(end)) => println!("window: all -> {end}"),
+    }
 }
 
 fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
@@ -1461,7 +1580,10 @@ mod tests {
 
     #[test]
     fn agent_quality_marks_clean_audit_ready() {
-        let quality = agent_quality(&audit_with_counts(0, 0, 0, 0, 0, 0, 0));
+        let quality = agent_quality(
+            &audit_with_counts(0, 0, 0, 0, 0, 0, 0),
+            AgentRepairWindow::LastMinutes(120),
+        );
 
         assert!(quality.ready);
         assert!(quality.coverage_ready);
@@ -1473,7 +1595,10 @@ mod tests {
 
     #[test]
     fn agent_quality_suggests_context_repairs_without_blocking_coverage() {
-        let quality = agent_quality(&audit_with_counts(0, 0, 0, 3, 2, 1, 0));
+        let quality = agent_quality(
+            &audit_with_counts(0, 0, 0, 3, 2, 1, 0),
+            AgentRepairWindow::LastMinutes(120),
+        );
 
         assert!(!quality.ready);
         assert!(quality.coverage_ready);
@@ -1484,16 +1609,20 @@ mod tests {
         assert_eq!(
             quality.repair_commands,
             vec![
-                "activity_tracker repair-titles --dry-run --json",
-                "activity_tracker repair-urls --dry-run --json",
-                "activity_tracker repair-context --dry-run --json"
+                "activity_tracker repair-titles --last-minutes 120 --dry-run --json",
+                "activity_tracker repair-urls --last-minutes 120 --dry-run --json",
+                "activity_tracker repair-context --last-minutes 120 --dry-run --json"
             ]
         );
     }
 
     #[test]
-    fn agent_quality_suggests_coverage_repairs_for_structural_issues() {
-        let quality = agent_quality(&audit_with_counts(1, 1, 1, 0, 0, 0, 0));
+    fn agent_quality_suggests_coverage_repairs_for_structural_issues() -> Result<()> {
+        let date = parse_date("2026-06-03")?;
+        let quality = agent_quality(
+            &audit_with_counts(1, 1, 1, 0, 0, 0, 0),
+            AgentRepairWindow::Date(date),
+        );
 
         assert!(!quality.ready);
         assert!(!quality.coverage_ready);
@@ -1502,7 +1631,8 @@ mod tests {
         assert_eq!(quality.blocking_issue_count, 3);
         assert_eq!(
             quality.repair_commands,
-            vec!["activity_tracker repair-gaps --dry-run --json"]
+            vec!["activity_tracker repair-gaps --from 2026-06-03 --to 2026-06-03 --dry-run --json"]
         );
+        Ok(())
     }
 }

@@ -936,6 +936,15 @@ impl LogStore {
     }
 
     pub fn reclassify_sessions(&self, dry_run: bool) -> Result<ReclassifyReport> {
+        self.reclassify_sessions_in_window(None, None, dry_run)
+    }
+
+    pub fn reclassify_sessions_in_window(
+        &self,
+        window_start: Option<DateTime<Local>>,
+        window_end: Option<DateTime<Local>>,
+        dry_run: bool,
+    ) -> Result<ReclassifyReport> {
         self.ensure_dirs()?;
         let sessions = self.load_sessions_from_db()?;
         let mut report = ReclassifyReport {
@@ -944,6 +953,9 @@ impl LogStore {
         };
 
         for session in sessions {
+            if !session_overlaps_time_window(&session, window_start, window_end) {
+                continue;
+            }
             report.scanned += 1;
             let category = category_for_session(&session);
             if category == session.category {
@@ -969,8 +981,18 @@ impl LogStore {
         gap_threshold_seconds: f64,
         dry_run: bool,
     ) -> Result<RepairGapsReport> {
+        self.repair_gaps_in_window(None, None, gap_threshold_seconds, dry_run)
+    }
+
+    pub fn repair_gaps_in_window(
+        &self,
+        window_start: Option<DateTime<Local>>,
+        window_end: Option<DateTime<Local>>,
+        gap_threshold_seconds: f64,
+        dry_run: bool,
+    ) -> Result<RepairGapsReport> {
         self.ensure_dirs()?;
-        let sessions = self.load_sessions()?;
+        let sessions = self.sessions_in_window(window_start, window_end)?;
         let audit = audit_sessions(&sessions, gap_threshold_seconds);
         let mut report = RepairGapsReport {
             scanned: sessions.len(),
@@ -993,6 +1015,15 @@ impl LogStore {
     }
 
     pub fn repair_titles(&self, dry_run: bool) -> Result<RepairTitlesReport> {
+        self.repair_titles_in_window(None, None, dry_run)
+    }
+
+    pub fn repair_titles_in_window(
+        &self,
+        window_start: Option<DateTime<Local>>,
+        window_end: Option<DateTime<Local>>,
+        dry_run: bool,
+    ) -> Result<RepairTitlesReport> {
         self.ensure_dirs()?;
         let sessions = self.load_sessions_from_db()?;
         let browser_titles = unique_browser_titles_by_url(&sessions);
@@ -1002,6 +1033,9 @@ impl LogStore {
         };
 
         for session in sessions {
+            if !session_overlaps_time_window(&session, window_start, window_end) {
+                continue;
+            }
             report.scanned += 1;
             let Some(repair) = repaired_title_for_session(&session, &browser_titles) else {
                 continue;
@@ -1026,6 +1060,15 @@ impl LogStore {
     }
 
     pub fn repair_urls(&self, dry_run: bool) -> Result<RepairUrlsReport> {
+        self.repair_urls_in_window(None, None, dry_run)
+    }
+
+    pub fn repair_urls_in_window(
+        &self,
+        window_start: Option<DateTime<Local>>,
+        window_end: Option<DateTime<Local>>,
+        dry_run: bool,
+    ) -> Result<RepairUrlsReport> {
         self.ensure_dirs()?;
         let sessions = self.load_sessions_from_db()?;
         let mut report = RepairUrlsReport {
@@ -1034,6 +1077,9 @@ impl LogStore {
         };
 
         for (index, session) in sessions.iter().enumerate() {
+            if !session_overlaps_time_window(session, window_start, window_end) {
+                continue;
+            }
             report.scanned += 1;
             let previous = index.checked_sub(1).and_then(|index| sessions.get(index));
             let next = sessions.get(index + 1);
@@ -1060,6 +1106,15 @@ impl LogStore {
     }
 
     pub fn repair_context(&self, dry_run: bool) -> Result<RepairContextReport> {
+        self.repair_context_in_window(None, None, dry_run)
+    }
+
+    pub fn repair_context_in_window(
+        &self,
+        window_start: Option<DateTime<Local>>,
+        window_end: Option<DateTime<Local>>,
+        dry_run: bool,
+    ) -> Result<RepairContextReport> {
         self.ensure_dirs()?;
         let sessions = self.load_sessions_from_db()?;
         let url_titles = unique_clean_browser_titles_by_url(&sessions);
@@ -1069,6 +1124,9 @@ impl LogStore {
         };
 
         for (index, session) in sessions.iter().enumerate() {
+            if !session_overlaps_time_window(session, window_start, window_end) {
+                continue;
+            }
             report.scanned += 1;
             let context_mismatch = browser_context_mismatch(session);
             let missing_title = browser_context_missing_title(session);
@@ -1838,13 +1896,19 @@ pub fn filter_sessions_by_time_window(
 ) -> Vec<UsageSession> {
     let mut filtered: Vec<_> = sessions
         .into_iter()
-        .filter(|session| {
-            window_start.is_none_or(|start| session.end_time > start)
-                && window_end.is_none_or(|end| session.start_time < end)
-        })
+        .filter(|session| session_overlaps_time_window(session, window_start, window_end))
         .collect();
     filtered.sort_by_key(|session| (session.start_time, session.end_time));
     filtered
+}
+
+fn session_overlaps_time_window(
+    session: &UsageSession,
+    window_start: Option<DateTime<Local>>,
+    window_end: Option<DateTime<Local>>,
+) -> bool {
+    window_start.is_none_or(|start| session.end_time > start)
+        && window_end.is_none_or(|end| session.start_time < end)
 }
 
 pub fn query_time_window(
@@ -4384,6 +4448,55 @@ mod tests {
         assert!(sessions.iter().any(|session| session.url.as_deref()
             == Some("https://example.com/ambiguous")
             && session.title.is_none()));
+        Ok(())
+    }
+
+    #[test]
+    fn repair_titles_window_repairs_only_target_rows_with_global_evidence() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let evidence_start = Local
+            .with_ymd_and_hms(2026, 6, 2, 9, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing evidence start"))?;
+        let target_start = Local
+            .with_ymd_and_hms(2026, 6, 3, 9, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing target start"))?;
+        let outside_start = Local
+            .with_ymd_and_hms(2026, 6, 4, 9, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing outside start"))?;
+        let stable_url = "https://example.com/stable";
+        let stable_title = "Stable Title";
+        let evidence =
+            browser_session(evidence_start, 0, 60, Some(stable_title), Some(stable_url))?;
+        let target = browser_session(target_start, 0, 60, None, Some(stable_url))?;
+        let outside = browser_session(outside_start, 0, 60, None, Some(stable_url))?;
+        let (window_start, window_end) = day_bounds(parse_date("2026-06-03")?)?;
+
+        store.append_session(&evidence)?;
+        store.append_session(&target)?;
+        store.append_session(&outside)?;
+        let dry_run = store.repair_titles_in_window(Some(window_start), Some(window_end), true)?;
+        let report = store.repair_titles_in_window(Some(window_start), Some(window_end), false)?;
+        let sessions = store.load_sessions()?;
+
+        assert_eq!(dry_run.scanned, 1);
+        assert_eq!(dry_run.repaired, 1);
+        assert_eq!(dry_run.browser_repaired, 1);
+        assert_eq!(report.repaired, 1);
+        assert!(
+            sessions
+                .iter()
+                .any(|session| session.start_time == target_start
+                    && session.title.as_deref() == Some(stable_title))
+        );
+        assert!(
+            sessions
+                .iter()
+                .any(|session| session.start_time == outside_start && session.title.is_none())
+        );
         Ok(())
     }
 
