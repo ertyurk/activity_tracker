@@ -1147,7 +1147,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     let now = Local::now();
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 10,
+            "schema_version": 11,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1209,6 +1209,18 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
             "service_install_args": ["--bin", "--interval-seconds", "--idle-threshold-seconds", "--no-load"],
             "service_install_persisted_args": ["--data-dir", "--interval-seconds", "--idle-threshold-seconds"],
             "service_status_fields": ["label", "loaded", "running", "pid", "program", "arguments", "stdout_path", "stderr_path", "raw", "error"],
+            "service_config_fields": [
+                "ok",
+                "expected_data_dir",
+                "data_dir",
+                "data_dir_matches",
+                "track_command_present",
+                "quiet_present",
+                "interval_seconds",
+                "interval_arg_valid",
+                "idle_threshold_seconds",
+                "idle_threshold_arg_valid",
+            ],
             "json_error_fields": [
                 "ok",
                 "generated_at",
@@ -1245,6 +1257,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "healthy",
                 "fresh",
                 "service",
+                "service_config",
                 "storage",
                 "storage_verification",
                 "today_audit",
@@ -1265,6 +1278,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "idle_seconds",
                 "service",
                 "service_running",
+                "service_config",
                 "storage_verification",
                 "sqlite",
                 "sessions_path",
@@ -1362,7 +1376,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 10");
+        println!("schema_version: 11");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
@@ -1453,8 +1467,9 @@ fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
         store.sessions_for_day_with_open(date, now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
     let audit = audit_sessions(&sessions, args.gap_threshold_seconds);
     let service = service_status_report();
+    let service_config = service_config_status(store, &service);
     let storage_verification = store.verify_storage()?;
-    let healthy = health_ready(&service, &storage, &storage_verification);
+    let healthy = health_ready(&service, &service_config, &storage, &storage_verification);
 
     if args.json {
         let today_audit = compact_audit(audit.clone());
@@ -1464,6 +1479,7 @@ fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
             "healthy": healthy,
             "fresh": storage.fresh,
             "service": service,
+            "service_config": service_config,
             "storage": storage,
             "storage_verification": storage_verification,
             "today_audit": today_audit,
@@ -1482,6 +1498,7 @@ fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
         println!("healthy: {}", yes_no(healthy));
         println!("fresh: {}", yes_no(storage.fresh));
         println!("service_running: {}", yes_no(service.running));
+        println!("service_config_ok: {}", yes_no(service_config.ok));
         println!("storage_verified: {}", yes_no(storage_verification.ok));
         if let Some(pid) = service.pid {
             println!("service_pid: {pid}");
@@ -1529,12 +1546,75 @@ fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ServiceConfigStatus {
+    ok: bool,
+    expected_data_dir: PathBuf,
+    data_dir: Option<PathBuf>,
+    data_dir_matches: bool,
+    track_command_present: bool,
+    quiet_present: bool,
+    interval_seconds: Option<u64>,
+    interval_arg_valid: bool,
+    idle_threshold_seconds: Option<u64>,
+    idle_threshold_arg_valid: bool,
+}
+
+fn service_config_status(
+    store: &LogStore,
+    service: &activity_tracker::ServiceStatusReport,
+) -> ServiceConfigStatus {
+    let data_dir = service_argument_value(&service.arguments, "--data-dir").map(PathBuf::from);
+    let data_dir_matches = data_dir.as_deref() == Some(store.root());
+    let interval_seconds = service_argument_value(&service.arguments, "--interval-seconds")
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0);
+    let idle_threshold_seconds =
+        service_argument_value(&service.arguments, "--idle-threshold-seconds")
+            .and_then(|value| value.parse::<u64>().ok());
+    let track_command_present = service.arguments.iter().any(|arg| arg == "track");
+    let quiet_present = service.arguments.iter().any(|arg| arg == "--quiet");
+    let interval_arg_valid = interval_seconds.is_some();
+    let idle_threshold_arg_valid = idle_threshold_seconds.is_some();
+    let ok = service.running
+        && data_dir_matches
+        && track_command_present
+        && quiet_present
+        && interval_arg_valid
+        && idle_threshold_arg_valid;
+
+    ServiceConfigStatus {
+        ok,
+        expected_data_dir: store.root().to_path_buf(),
+        data_dir,
+        data_dir_matches,
+        track_command_present,
+        quiet_present,
+        interval_seconds,
+        interval_arg_valid,
+        idle_threshold_seconds,
+        idle_threshold_arg_valid,
+    }
+}
+
+fn service_argument_value<'a>(arguments: &'a [String], key: &str) -> Option<&'a str> {
+    let mut previous_was_key = false;
+    for argument in arguments {
+        if previous_was_key {
+            return Some(argument.as_str());
+        }
+        previous_was_key = argument == key;
+    }
+    None
+}
+
 fn health_ready(
     service: &activity_tracker::ServiceStatusReport,
+    service_config: &ServiceConfigStatus,
     storage: &activity_tracker::StorageHealth,
     verification: &activity_tracker::StorageVerification,
 ) -> bool {
-    service.running && storage.fresh && verification.ok
+    service.running && service_config.ok && storage.fresh && verification.ok
 }
 
 fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
@@ -1547,13 +1627,20 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
     let now = Local::now();
     let today = now.date_naive();
     let service = service_status_report();
+    let service_config = service_config_status(store, &service);
     let storage = store.storage_health(now, DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS)?;
     let storage_verification = store.verify_storage()?;
     let today_sessions =
         store.sessions_for_day_with_open(today, now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
     let today_audit = audit_sessions(&today_sessions, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS);
     let today_quality = agent_quality(&today_audit, AgentRepairWindow::Date(today));
-    let today_warnings = agent_warnings(&service, &storage, &storage_verification, &today_audit);
+    let today_warnings = agent_warnings(
+        &service,
+        &service_config,
+        &storage,
+        &storage_verification,
+        &today_audit,
+    );
 
     let (
         window_mode,
@@ -1613,8 +1700,20 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
     } else {
         audit_sessions(&sessions, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS)
     };
-    let ready = agent_ready(&service, &storage, &storage_verification, &window_audit);
-    let warnings = agent_warnings(&service, &storage, &storage_verification, &window_audit);
+    let ready = agent_ready(
+        &service,
+        &service_config,
+        &storage,
+        &storage_verification,
+        &window_audit,
+    );
+    let warnings = agent_warnings(
+        &service,
+        &service_config,
+        &storage,
+        &storage_verification,
+        &window_audit,
+    );
     let quality = agent_quality(&window_audit, repair_window);
     let repair_plan = agent_repair_plan(
         store,
@@ -1660,6 +1759,7 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
             "health": {
                 "service_running": service.running,
                 "service_pid": service.pid,
+                "service_config": service_config,
                 "fresh": storage.fresh,
                 "latest_observed_at": storage.latest_observed_at,
                 "latest_observed_age_seconds": storage.latest_observed_age_seconds,
@@ -1698,6 +1798,7 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
         println!("quality_score: {}", quality.score);
         println!("quality_status: {}", quality.status);
         println!("service_running: {}", yes_no(service.running));
+        println!("service_config_ok: {}", yes_no(service_config.ok));
         println!("fresh: {}", yes_no(storage.fresh));
         println!("storage_verified: {}", yes_no(storage_verification.ok));
         println!("window: {window_mode}");
@@ -1753,6 +1854,7 @@ struct DoctorReport {
     idle_seconds: Option<f64>,
     service: activity_tracker::ServiceStatusReport,
     service_running: bool,
+    service_config: ServiceConfigStatus,
     storage_verification: activity_tracker::StorageVerification,
     sqlite: PathBuf,
     sessions_path: PathBuf,
@@ -1791,6 +1893,7 @@ fn build_doctor_report<P: ActivityProbe>(
     let checkpoint = store.open_session_checkpoint()?;
     let active = check_optional_probe(probe.active_entity());
     let idle = check_optional_probe(probe.idle_seconds());
+    let service_config = service_config_status(store, &service);
     let storage_verification = store.verify_storage()?;
     let mut hints = Vec::new();
     if !osascript.ok || !active.ok {
@@ -1805,8 +1908,16 @@ fn build_doctor_report<P: ActivityProbe>(
     if !service.running {
         hints.push("install_or_start_launchd_service".to_string());
     }
+    if service.running && !service_config.ok {
+        hints.push("reinstall_launchd_service_with_current_data_root".to_string());
+    }
     let service_running = service.running;
-    let ok = osascript.ok && active.ok && idle.ok && storage_verification.ok && service_running;
+    let ok = osascript.ok
+        && active.ok
+        && idle.ok
+        && storage_verification.ok
+        && service_running
+        && service_config.ok;
 
     Ok(DoctorReport {
         generated_at: Local::now(),
@@ -1822,6 +1933,7 @@ fn build_doctor_report<P: ActivityProbe>(
         idle_seconds: idle.value,
         service,
         service_running,
+        service_config,
         storage_verification,
         sqlite: store.db_path(),
         sessions_path: store.sessions_path(),
@@ -1909,6 +2021,7 @@ fn print_doctor_text(report: &DoctorReport) {
         println!("idle_seconds: {seconds:.1}");
     }
     println!("service_running: {}", yes_no(report.service_running));
+    println!("service_config_ok: {}", yes_no(report.service_config.ok));
     if let Some(pid) = report.service.pid {
         println!("service_pid: {pid}");
     }
@@ -2152,11 +2265,13 @@ enum AgentRepairWindow {
 
 fn agent_ready(
     service: &activity_tracker::ServiceStatusReport,
+    service_config: &ServiceConfigStatus,
     storage: &activity_tracker::StorageHealth,
     verification: &activity_tracker::StorageVerification,
     audit: &activity_tracker::ActivityAudit,
 ) -> bool {
     service.running
+        && service_config.ok
         && storage.fresh
         && verification.ok
         && audit.gap_count == 0
@@ -2405,6 +2520,7 @@ fn agent_repair_command(command: &str, window: AgentRepairWindow) -> String {
 
 fn agent_warnings(
     service: &activity_tracker::ServiceStatusReport,
+    service_config: &ServiceConfigStatus,
     storage: &activity_tracker::StorageHealth,
     verification: &activity_tracker::StorageVerification,
     audit: &activity_tracker::ActivityAudit,
@@ -2412,6 +2528,9 @@ fn agent_warnings(
     let mut warnings = Vec::new();
     if !service.running {
         warnings.push("service_not_running".to_string());
+    }
+    if !service_config.ok {
+        warnings.push("service_config_mismatch".to_string());
     }
     if !storage.fresh {
         warnings.push("storage_stale".to_string());
@@ -2723,6 +2842,40 @@ mod tests {
         }
     }
 
+    fn service_report_for_store(
+        store: &LogStore,
+        running: bool,
+    ) -> activity_tracker::ServiceStatusReport {
+        let mut report = service_report(running);
+        report.arguments = vec![
+            "/tmp/activity_tracker".to_string(),
+            "--data-dir".to_string(),
+            store.root().display().to_string(),
+            "track".to_string(),
+            "--quiet".to_string(),
+            "--interval-seconds".to_string(),
+            "2".to_string(),
+            "--idle-threshold-seconds".to_string(),
+            "300".to_string(),
+        ];
+        report
+    }
+
+    fn service_config(ok: bool) -> ServiceConfigStatus {
+        ServiceConfigStatus {
+            ok,
+            expected_data_dir: PathBuf::from("/tmp/activity_tracker"),
+            data_dir: Some(PathBuf::from("/tmp/activity_tracker")),
+            data_dir_matches: ok,
+            track_command_present: ok,
+            quiet_present: ok,
+            interval_seconds: ok.then_some(2),
+            interval_arg_valid: ok,
+            idle_threshold_seconds: ok.then_some(300),
+            idle_threshold_arg_valid: ok,
+        }
+    }
+
     fn storage_health(fresh: bool) -> activity_tracker::StorageHealth {
         activity_tracker::StorageHealth {
             session_count: 0,
@@ -2867,7 +3020,7 @@ mod tests {
                 value: None,
                 error: Some("osascript unavailable".to_string()),
             },
-            service_report(true),
+            service_report_for_store(&store, true),
         )?;
 
         assert!(!report.ok);
@@ -2908,12 +3061,13 @@ mod tests {
                 value: Some(()),
                 error: None,
             },
-            service_report(true),
+            service_report_for_store(&store, true),
         )?;
 
         assert!(report.ok);
         assert!(report.active_probe_ok);
         assert!(report.idle_probe_ok);
+        assert!(report.service_config.ok);
         assert!(report.storage_verification.ok);
         assert!(report.hints.is_empty());
         Ok(())
@@ -2931,7 +3085,7 @@ mod tests {
                 value: Some(()),
                 error: None,
             },
-            service_report(false),
+            service_report_for_store(&store, false),
         )?;
 
         assert!(!report.ok);
@@ -2941,6 +3095,34 @@ mod tests {
                 .hints
                 .contains(&"install_or_start_launchd_service".to_string())
         );
+        Ok(())
+    }
+
+    #[test]
+    fn service_config_status_requires_selected_data_root() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let good = service_config_status(&store, &service_report_for_store(&store, true));
+        assert!(good.ok);
+        assert!(good.data_dir_matches);
+        assert_eq!(good.interval_seconds, Some(2));
+        assert_eq!(good.idle_threshold_seconds, Some(300));
+
+        let mut wrong = service_report_for_store(&store, true);
+        wrong.arguments = vec![
+            "/tmp/activity_tracker".to_string(),
+            "--data-dir".to_string(),
+            "/tmp/other-root".to_string(),
+            "track".to_string(),
+            "--quiet".to_string(),
+            "--interval-seconds".to_string(),
+            "2".to_string(),
+            "--idle-threshold-seconds".to_string(),
+            "300".to_string(),
+        ];
+        let wrong = service_config_status(&store, &wrong);
+        assert!(!wrong.ok);
+        assert!(!wrong.data_dir_matches);
         Ok(())
     }
 
@@ -3006,37 +3188,63 @@ mod tests {
     fn agent_ready_requires_storage_verification() {
         let audit = audit_with_counts(0, 0, 0, 0, 0, 0, 0);
         let service = service_report(true);
+        let config = service_config(true);
         let storage = storage_health(true);
         let verified = storage_verification(true);
         let broken = storage_verification(false);
 
-        assert!(agent_ready(&service, &storage, &verified, &audit));
-        assert!(!agent_ready(&service, &storage, &broken, &audit));
+        assert!(agent_ready(&service, &config, &storage, &verified, &audit));
+        assert!(!agent_ready(&service, &config, &storage, &broken, &audit));
+        assert!(!agent_ready(
+            &service,
+            &service_config(false),
+            &storage,
+            &verified,
+            &audit
+        ));
     }
 
     #[test]
     fn health_ready_requires_storage_verification() {
         let service = service_report(true);
+        let config = service_config(true);
         let storage = storage_health(true);
         let verified = storage_verification(true);
         let broken = storage_verification(false);
 
-        assert!(health_ready(&service, &storage, &verified));
-        assert!(!health_ready(&service, &storage, &broken));
-        assert!(!health_ready(&service_report(false), &storage, &verified));
-        assert!(!health_ready(&service, &storage_health(false), &verified));
+        assert!(health_ready(&service, &config, &storage, &verified));
+        assert!(!health_ready(&service, &config, &storage, &broken));
+        assert!(!health_ready(
+            &service,
+            &service_config(false),
+            &storage,
+            &verified
+        ));
+        assert!(!health_ready(
+            &service_report(false),
+            &config,
+            &storage,
+            &verified
+        ));
+        assert!(!health_ready(
+            &service,
+            &config,
+            &storage_health(false),
+            &verified
+        ));
     }
 
     #[test]
     fn agent_warnings_report_broken_storage_views() {
         let audit = audit_with_counts(0, 0, 0, 0, 0, 0, 0);
         let service = service_report(true);
+        let service_config = service_config(true);
         let storage = storage_health(true);
         let mut verification = storage_verification(false);
         verification.csv_in_sync = false;
         verification.mirror_in_sync = false;
 
-        let warnings = agent_warnings(&service, &storage, &verification, &audit);
+        let warnings = agent_warnings(&service, &service_config, &storage, &verification, &audit);
 
         assert!(warnings.contains(&"storage_verification_failed".to_string()));
         assert!(warnings.contains(&"jsonl_mirror_out_of_sync".to_string()));

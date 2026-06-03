@@ -31,12 +31,12 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - `schema --json` should expose CLI/data-contract capabilities, including agent output and storage verification fields, for SwiftUI and tool harness setup.
 - `now --json` should remain a cheap current-activity poll for SwiftUI/menu-bar clients.
 - `verify --json` should prove SQLite integrity plus JSONL and default CSV readability/count/content sync.
-- `health --json` should include storage verification and require it for `healthy`.
+- `health --json` should include service config validation and storage verification, requiring both for `healthy`.
 - `repair-mirror --json` should rebuild JSONL mirror and CSV view from SQLite source of truth when verification fails.
 - Keep window-scoped quality issue samples in `agent --json`; compact today-wide audit samples to keep payload bounded.
 - Keep `agent` repair commands scoped to the same audited window, and keep `reclassify`/repair commands window-aware so agents do not mutate all history for a narrow report.
 - Use `agent.repair_plan.actionable_commands` for automated fixes; `agent.quality.repair_commands` are candidates and may explain non-repairable quality warnings.
-- `agent --json` should expose `report_ready`/`action_required`, include storage verification, require clean storage verification for report readiness, and distinguish actionable repairs from residual non-repairable warnings so reporting agents do not guess.
+- `agent --json` should expose `report_ready`/`action_required`, include storage verification and service config validation, require both for report readiness, and distinguish actionable repairs from residual non-repairable warnings so reporting agents do not guess.
 - If JSONL/CSV derived storage verification fails while SQLite is healthy, `agent.repair_plan.actionable_commands` should include `activity_tracker repair-mirror --json`.
 - Tolerate brief active-app probe misses; do not turn transient macOS/AppleScript failures into fake gaps.
 - Tracker startup should tolerate initial active-app or idle probe failures and begin with no active entity instead of exiting.
@@ -47,7 +47,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - `service install` should persist the selected data root plus configured `--interval-seconds` and `--idle-threshold-seconds` into LaunchAgent arguments.
 - `service status --json` should expose normalized program, arguments, stdout path, and stderr path.
 - `service logs --json` should expose bounded launchd stdout/stderr tails with paths for service diagnostics.
-- `doctor --json` should keep setup diagnostics machine-readable and non-fatal for active-app or idle probe failures; expose probe status/error fields, launchd service state, storage verification, and hints instead of exiting before agents can inspect the payload.
+- `doctor --json` should keep setup diagnostics machine-readable and non-fatal for active-app or idle probe failures; expose probe status/error fields, launchd service state/config validation, storage verification, and hints instead of exiting before agents can inspect the payload.
 - Commands invoked with `--json` should emit a machine-readable error envelope on runtime failure (`ok: false`, `error.code`, `error.message`) instead of forcing agents to scrape stderr.
 - CLI output should support plain text for humans and `--json` for agents; quality commands should expose both time coverage and context richness.
 

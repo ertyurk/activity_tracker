@@ -80,7 +80,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Keep `inventory --json` window-aware and backed by the same indexed query window; use it for filter menus instead of scanning raw history in callers.
 - Keep `schema --json` stable enough for SwiftUI/tool harness discovery; update it whenever commands, filters, agent fields, storage verification fields, session fields, defaults, or quality issue kinds change.
 - Keep `now --json` cheap and suitable for frequent SwiftUI/menu-bar polling.
-- Keep `agent --json` explicit about report readiness: `report_ready` should be true only when service/freshness/storage verification/window coverage are ready and no actionable repair remains; `action_required` should reflect actionable repairs, while residual non-repairable warnings stay visible in the repair plan and quality fields.
+- Keep `agent --json` explicit about report readiness: `report_ready` should be true only when service config/freshness/storage verification/window coverage are ready and no actionable repair remains; `action_required` should reflect actionable repairs, while residual non-repairable warnings stay visible in the repair plan and quality fields.
 - If JSONL/CSV derived storage verification fails while SQLite is healthy, expose `activity_tracker repair-mirror --json` in `agent.repair_plan.actionable_commands`.
 - Use app identity plus browser URL domains for categories; reclassify stored sessions when mappings change.
 - Keep observed domain mappings current for recurring work tools, communication, AI, writing, research, and development sites.
@@ -98,7 +98,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Keep `service install` LaunchAgent arguments aligned with selected data root, configured sample interval, and idle threshold.
 - Keep `service status --json` normalized enough for agents to inspect program, arguments, and log paths without parsing raw `launchctl` text.
 - Keep `service logs --json` bounded and path-aware so agents can inspect launchd stdout/stderr tails without shell-specific file reads.
-- Keep `doctor --json` non-fatal for active-app or idle probe failures; expose probe status/error fields, launchd service state, storage verification, and hints so setup agents can diagnose permissions/service setup.
+- Keep `doctor --json` non-fatal for active-app or idle probe failures; expose probe status/error fields, launchd service state/config validation, storage verification, and hints so setup agents can diagnose permissions/service setup.
 - Keep runtime failures under `--json` machine-readable with `ok: false`, `error.code`, and `error.message`; do not make agents parse stderr for expected command errors.
 - Canonicalize known browser blank tabs as `about:newtab` and keep them separate from actionable missing-URL audit rows.
 - Record idle as `activity_type: "idle"` with `bundle_id: "local.activity_tracker.idle"` once HID idle time crosses threshold.
