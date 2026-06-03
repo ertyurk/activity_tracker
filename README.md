@@ -163,6 +163,7 @@ Service/setup payloads:
 - `service status --json` reports launchd load/running state, PID, program, arguments, and log paths.
 - `service logs --json` reports bounded launchd stdout/stderr tails.
 - `schema --json` reports the stable CLI/data contract, including read payload, import, and repair report fields.
+- `schema --json` distinguishes full `paths --json` fields from embedded `paths` fields used by app/report payloads.
 - `--json` can be passed command-locally (`doctor --json`) or globally before the subcommand (`--json doctor`).
 - Global `--json` requires an explicit subcommand; plain no-subcommand mode still defaults to foreground `track` for humans.
 - Runtime failures under `--json` emit `{ "ok": false, "error": { "code", "message" } }`.

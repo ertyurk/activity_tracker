@@ -81,6 +81,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Keep `inventory --json` window-aware and backed by the same indexed query window; use it for filter menus instead of scanning raw history in callers.
 - Keep `schema --json` stable enough for SwiftUI/tool harness discovery; update it whenever commands, filters, agent fields, storage verification fields, session fields, defaults, or quality issue kinds change.
 - Include read-command payload fields for day, summary, timeline, inventory, query, report, audit, and paths in `schema --json`.
+- Distinguish full `paths --json` output fields from embedded storage path objects in `schema --json`.
 - Include import and repair report fields in `schema --json` so agents do not infer JSON payload shapes.
 - Keep `now --json` cheap and suitable for frequent SwiftUI/menu-bar polling; `ready` should require service config validation.
 - Keep `agent --json` explicit about report readiness: `report_ready` should be true only when service binary/config, freshness, storage verification, and window coverage are ready and no actionable repair remains; `action_required` should reflect actionable repairs, while residual non-repairable warnings stay visible in the repair plan and quality fields.

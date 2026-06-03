@@ -31,7 +31,7 @@ use tracing_subscriber::EnvFilter;
 const DEFAULT_AGENT_LAST_MINUTES: u64 = 120;
 const DEFAULT_AGENT_TIMELINE_LIMIT: usize = 20;
 const DEFAULT_AGENT_SUMMARY_LIMIT: usize = 12;
-const SCHEMA_VERSION: u64 = 22;
+const SCHEMA_VERSION: u64 = 23;
 const SERVICE_INSTALL_BINARY_REQUIREMENTS: &[&str] =
     &["absolute_path", "exists", "regular_file", "executable"];
 const PATHS_FIELDS: &[&str] = &[
@@ -43,6 +43,122 @@ const PATHS_FIELDS: &[&str] = &[
     "logs",
     "legacy_root",
     "legacy_sessions_jsonl",
+];
+const EMBEDDED_PATHS_FIELDS: &[&str] =
+    &["root", "sqlite", "sessions_jsonl", "csv", "exports", "logs"];
+const SERVICE_STATUS_FIELDS: &[&str] = &[
+    "label",
+    "loaded",
+    "running",
+    "pid",
+    "program",
+    "arguments",
+    "stdout_path",
+    "stderr_path",
+    "raw",
+    "error",
+];
+const SERVICE_CONFIG_FIELDS: &[&str] = &[
+    "ok",
+    "program",
+    "argument_binary",
+    "program_matches_argument",
+    "program_exists",
+    "expected_data_dir",
+    "data_dir",
+    "data_dir_matches",
+    "track_command_present",
+    "quiet_present",
+    "interval_seconds",
+    "interval_arg_valid",
+    "idle_threshold_seconds",
+    "idle_threshold_arg_valid",
+];
+const SERVICE_LOG_FIELDS: &[&str] = &["stdout_path", "stderr_path", "stdout", "stderr"];
+const NOW_FIELDS: &[&str] = &[
+    "generated_at",
+    "ready",
+    "service_running",
+    "service_pid",
+    "service_config",
+    "fresh",
+    "checkpoint_recent",
+    "latest_observed_at",
+    "latest_observed_age_seconds",
+    "session_count",
+    "active_session",
+    "open_session",
+    "last_completed_session",
+    "paths",
+];
+const STORAGE_HEALTH_FIELDS: &[&str] = &[
+    "session_count",
+    "last_completed_session",
+    "open_session",
+    "latest_observed_at",
+    "latest_observed_age_seconds",
+    "stale_threshold_seconds",
+    "fresh",
+];
+const STORAGE_VERIFICATION_FIELDS: &[&str] = &[
+    "ok",
+    "sqlite_path",
+    "sqlite_exists",
+    "sqlite_integrity_ok",
+    "sqlite_integrity_messages",
+    "sqlite_session_count",
+    "jsonl_path",
+    "jsonl_exists",
+    "jsonl_readable",
+    "jsonl_error",
+    "jsonl_session_count",
+    "mirror_count_matches",
+    "mirror_content_matches",
+    "mirror_in_sync",
+    "csv_path",
+    "csv_exists",
+    "csv_readable",
+    "csv_error",
+    "csv_session_count",
+    "csv_count_matches",
+    "csv_content_matches",
+    "csv_in_sync",
+];
+const HEALTH_FIELDS: &[&str] = &[
+    "generated_at",
+    "date",
+    "healthy",
+    "fresh",
+    "service",
+    "service_config",
+    "storage",
+    "storage_verification",
+    "today_audit",
+    "gap_threshold_seconds",
+    "paths",
+];
+const DOCTOR_FIELDS: &[&str] = &[
+    "generated_at",
+    "ok",
+    "data_dir_writable",
+    "osascript_ok",
+    "osascript_error",
+    "active_probe_ok",
+    "active_probe_error",
+    "active_entity",
+    "idle_probe_ok",
+    "idle_probe_error",
+    "idle_seconds",
+    "service",
+    "service_running",
+    "service_config",
+    "storage_verification",
+    "sqlite",
+    "sessions_path",
+    "csv",
+    "open_session",
+    "legacy_sessions_path",
+    "hints",
 ];
 const SUMMARY_ROW_FIELDS: &[&str] = &["name", "seconds", "percentage"];
 const SUMMARY_FIELDS: &[&str] = &[
@@ -1056,14 +1172,7 @@ fn print_report(store: &LogStore, args: ReportArgs) -> Result<()> {
             "active_session": active_session,
             "open_session": store.open_session_checkpoint()?,
             "includes_active_session": includes_active_session,
-            "paths": {
-                "root": store.root(),
-                "sqlite": store.db_path(),
-                "sessions_jsonl": store.sessions_path(),
-                "csv": store.csv_path(),
-                "exports": store.exports_dir(),
-                "logs": store.logs_dir(),
-            },
+            "paths": embedded_paths_json_value(store),
         });
         print_json(&value)
     } else {
@@ -1558,6 +1667,17 @@ fn paths_json_value(store: &LogStore) -> serde_json::Value {
     })
 }
 
+fn embedded_paths_json_value(store: &LogStore) -> serde_json::Value {
+    serde_json::json!({
+        "root": store.root(),
+        "sqlite": store.db_path(),
+        "sessions_jsonl": store.sessions_path(),
+        "csv": store.csv_path(),
+        "exports": store.exports_dir(),
+        "logs": store.logs_dir(),
+    })
+}
+
 #[derive(Debug, Clone, Copy, Serialize)]
 struct SchemaField {
     name: &'static str,
@@ -1695,6 +1815,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 {"name": "url", "type": "string|null", "required": false},
             ],
             "paths_fields": paths_fields,
+            "embedded_paths_fields": EMBEDDED_PATHS_FIELDS,
             "day_fields": summary_fields,
             "summary_fields": summary_fields,
             "summary_row_fields": summary_row_fields,
@@ -1751,39 +1872,10 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "unload_requested",
                 "removed_or_absent",
             ],
-            "service_status_fields": ["label", "loaded", "running", "pid", "program", "arguments", "stdout_path", "stderr_path", "raw", "error"],
-            "service_config_fields": [
-                "ok",
-                "program",
-                "argument_binary",
-                "program_matches_argument",
-                "program_exists",
-                "expected_data_dir",
-                "data_dir",
-                "data_dir_matches",
-                "track_command_present",
-                "quiet_present",
-                "interval_seconds",
-                "interval_arg_valid",
-                "idle_threshold_seconds",
-                "idle_threshold_arg_valid",
-            ],
-            "now_fields": [
-                "generated_at",
-                "ready",
-                "service_running",
-                "service_pid",
-                "service_config",
-                "fresh",
-                "checkpoint_recent",
-                "latest_observed_at",
-                "latest_observed_age_seconds",
-                "session_count",
-                "active_session",
-                "open_session",
-                "last_completed_session",
-                "paths",
-            ],
+            "service_status_fields": SERVICE_STATUS_FIELDS,
+            "service_config_fields": SERVICE_CONFIG_FIELDS,
+            "service_log_fields": SERVICE_LOG_FIELDS,
+            "now_fields": NOW_FIELDS,
             "json_error_fields": [
                 "ok",
                 "generated_at",
@@ -1791,66 +1883,10 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "error.message",
             ],
             "json_error_codes": json_error_codes,
-            "storage_verification_fields": [
-                "ok",
-                "sqlite_path",
-                "sqlite_exists",
-                "sqlite_integrity_ok",
-                "sqlite_integrity_messages",
-                "sqlite_session_count",
-                "jsonl_path",
-                "jsonl_exists",
-                "jsonl_readable",
-                "jsonl_error",
-                "jsonl_session_count",
-                "mirror_count_matches",
-                "mirror_content_matches",
-                "mirror_in_sync",
-                "csv_path",
-                "csv_exists",
-                "csv_readable",
-                "csv_error",
-                "csv_session_count",
-                "csv_count_matches",
-                "csv_content_matches",
-                "csv_in_sync",
-            ],
-            "health_fields": [
-                "generated_at",
-                "date",
-                "healthy",
-                "fresh",
-                "service",
-                "service_config",
-                "storage",
-                "storage_verification",
-                "today_audit",
-                "gap_threshold_seconds",
-                "paths",
-            ],
-            "doctor_fields": [
-                "generated_at",
-                "ok",
-                "data_dir_writable",
-                "osascript_ok",
-                "osascript_error",
-                "active_probe_ok",
-                "active_probe_error",
-                "active_entity",
-                "idle_probe_ok",
-                "idle_probe_error",
-                "idle_seconds",
-                "service",
-                "service_running",
-                "service_config",
-                "storage_verification",
-                "sqlite",
-                "sessions_path",
-                "csv",
-                "open_session",
-                "legacy_sessions_path",
-                "hints",
-            ],
+            "storage_health_fields": STORAGE_HEALTH_FIELDS,
+            "storage_verification_fields": STORAGE_VERIFICATION_FIELDS,
+            "health_fields": HEALTH_FIELDS,
+            "doctor_fields": DOCTOR_FIELDS,
             "agent_fields": agent_field_definitions(),
             "agent_field_names": AGENT_FIELDS,
             "agent_window_fields": AGENT_WINDOW_FIELDS,
@@ -1951,14 +1987,7 @@ fn print_now(store: &LogStore, args: OutputArgs) -> Result<()> {
             "active_session": active_session,
             "open_session": storage.open_session,
             "last_completed_session": storage.last_completed_session,
-            "paths": {
-                "root": store.root(),
-                "sqlite": store.db_path(),
-                "sessions_jsonl": store.sessions_path(),
-                "csv": store.csv_path(),
-                "exports": store.exports_dir(),
-                "logs": store.logs_dir(),
-            },
+            "paths": embedded_paths_json_value(store),
         });
         print_json(&value)
     } else {
@@ -2013,14 +2042,7 @@ fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
             "storage_verification": storage_verification,
             "today_audit": today_audit,
             "gap_threshold_seconds": args.gap_threshold_seconds.max(0.0),
-            "paths": {
-                "root": store.root(),
-                "sqlite": store.db_path(),
-                "sessions_jsonl": store.sessions_path(),
-                "csv": store.csv_path(),
-                "exports": store.exports_dir(),
-                "logs": store.logs_dir(),
-            },
+            "paths": embedded_paths_json_value(store),
         });
         print_json(&value)
     } else {
@@ -2334,14 +2356,7 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
             "sessions": sessions_value,
             "include_sessions": args.include_sessions,
             "open_session": store.open_session_checkpoint()?,
-            "paths": {
-                "root": store.root(),
-                "sqlite": store.db_path(),
-                "sessions_jsonl": store.sessions_path(),
-                "csv": store.csv_path(),
-                "exports": store.exports_dir(),
-                "logs": store.logs_dir(),
-            },
+            "paths": embedded_paths_json_value(store),
         });
         print_json(&value)
     } else {
@@ -4004,6 +4019,98 @@ mod tests {
         let store = LogStore::new(dir.path().to_path_buf());
 
         assert_object_keys(paths_json_value(&store), PATHS_FIELDS)?;
+        assert_object_keys(embedded_paths_json_value(&store), EMBEDDED_PATHS_FIELDS)?;
+        Ok(())
+    }
+
+    #[test]
+    fn setup_poll_field_constants_match_serialized_payloads() -> anyhow::Result<()> {
+        let now = local_datetime(2026, 6, 3, 8, 0, 0)?;
+        let service = service_report(true);
+        let good_service_config = service_config(true);
+        let storage = storage_health(true);
+        let verification = storage_verification(true);
+
+        assert_object_keys(serde_json::to_value(&service)?, SERVICE_STATUS_FIELDS)?;
+        assert_object_keys(
+            serde_json::to_value(&good_service_config)?,
+            SERVICE_CONFIG_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::json!({
+                "stdout_path": "launchd.out.log",
+                "stderr_path": "launchd.err.log",
+                "stdout": [],
+                "stderr": [],
+            }),
+            SERVICE_LOG_FIELDS,
+        )?;
+        assert_object_keys(serde_json::to_value(&storage)?, STORAGE_HEALTH_FIELDS)?;
+        assert_object_keys(
+            serde_json::to_value(&verification)?,
+            STORAGE_VERIFICATION_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::json!({
+                "generated_at": now,
+                "ready": true,
+                "service_running": true,
+                "service_pid": null,
+                "service_config": good_service_config,
+                "fresh": true,
+                "checkpoint_recent": true,
+                "latest_observed_at": null,
+                "latest_observed_age_seconds": null,
+                "session_count": 0,
+                "active_session": null,
+                "open_session": null,
+                "last_completed_session": null,
+                "paths": {},
+            }),
+            NOW_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::json!({
+                "generated_at": now,
+                "date": "2026-06-03",
+                "healthy": true,
+                "fresh": true,
+                "service": service,
+                "service_config": service_config(true),
+                "storage": storage_health(true),
+                "storage_verification": storage_verification(true),
+                "today_audit": {},
+                "gap_threshold_seconds": 120.0,
+                "paths": {},
+            }),
+            HEALTH_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::to_value(DoctorReport {
+                generated_at: now,
+                ok: true,
+                data_dir_writable: true,
+                osascript_ok: true,
+                osascript_error: None,
+                active_probe_ok: true,
+                active_probe_error: None,
+                active_entity: None,
+                idle_probe_ok: true,
+                idle_probe_error: None,
+                idle_seconds: Some(0.0),
+                service: service_report(true),
+                service_running: true,
+                service_config: service_config(true),
+                storage_verification: storage_verification(true),
+                sqlite: PathBuf::from("activity.db"),
+                sessions_path: PathBuf::from("sessions.jsonl"),
+                csv: PathBuf::from("usage_stats.csv"),
+                open_session: None,
+                legacy_sessions_path: None,
+                hints: Vec::new(),
+            })?,
+            DOCTOR_FIELDS,
+        )?;
         Ok(())
     }
 
