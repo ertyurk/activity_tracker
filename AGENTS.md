@@ -12,6 +12,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - Keep day/range reads backed by indexed SQLite time columns; do not scan all history for routine queries.
 - Preserve timestamps, app name, bundle ID, category, title, URL when available, and exact duration.
 - Categories should use app identity and browser URL domain when available; run `reclassify` after category rules improve.
+- Keep observed browser-domain mappings current for recurring work tools, communication, AI, writing, research, and development domains.
 - Browser title and URL should come from one active-tab probe sample so log rows do not mix context from different tabs.
 - Brief browser title/URL probe misses may reuse current tab context only when same browser app and no conflicting title/URL evidence exists.
 - Preserve `activity_type` and treat idle as first-class log data, not as foreground app time.

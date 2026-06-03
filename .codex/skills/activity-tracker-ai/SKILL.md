@@ -59,6 +59,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Maintain the SQLite `open_session` heartbeat so crash/restart recovery does not lose the active span.
 - Include the provisional open session in live query commands (`day`, `logs`, `query`, `summary`, `report`) when it overlaps the query.
 - Use app identity plus browser URL domains for categories; reclassify stored sessions when mappings change.
+- Keep observed domain mappings current for recurring work tools, communication, AI, writing, research, and development sites.
 - For browsers, collect active tab title and URL from the same AppleScript sample so rows do not mix different tab states.
 - Stabilize brief same-browser title/URL misses from current tab context only when observed context is missing or matches; never fill across conflicting titles or URLs.
 - Keep suspicious browser title/URL mismatches visible in audit output so agents do not over-trust old mixed-context rows.

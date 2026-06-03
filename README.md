@@ -133,7 +133,7 @@ activity_tracker import-csv ~/Desktop/usage_stats.csv --json
 ```
 
 Imports skip duplicates using session start/end/app/bundle/title/url/activity type.
-Categories are app-aware and domain-aware. Browser sessions can classify as Communication, Email, Calendar, Development, AI, Design, Productivity, Social, or Research based on URL domain.
+Categories are app-aware and domain-aware. Browser sessions can classify as Communication, Email, Calendar, Development, AI, Design, Productivity, Social, Writing, or Research based on URL domain.
 
 ## Data Contract
 

@@ -2063,22 +2063,38 @@ pub fn category_for(bundle_id: &str, name: &str) -> String {
 #[must_use]
 pub fn category_for_url(url: &str) -> Option<&'static str> {
     let host = domain_from_url(url)?;
-    if host_matches(&host, "slack.com") || host_matches(&host, "whatsapp.com") {
+    if host_matches(&host, "slack.com")
+        || host_matches(&host, "whatsapp.com")
+        || host == "meet.google.com"
+    {
         return Some("Communication");
     }
-    if host == "mail.google.com" {
+    if host == "mail.google.com" || host_matches(&host, "mail-attachment.googleusercontent.com") {
         return Some("Email");
     }
     if host == "calendar.google.com" {
         return Some("Calendar");
     }
+    if host == "docs.google.com" {
+        return Some("Writing");
+    }
     if host_matches(&host, "github.com")
         || host == "localhost"
+        || host_matches(&host, "cloudflare.com")
+        || host_matches(&host, "workers.dev")
+        || host_matches(&host, "pages.dev")
+        || host_matches(&host, "firebase.google.com")
+        || host_matches(&host, "traefik.io")
+        || host_matches(&host, "d2lang.com")
         || host_matches(&host, "leanscale.com")
     {
         return Some("Development");
     }
-    if host_matches(&host, "claude.ai") || host_matches(&host, "chating.io") {
+    if host_matches(&host, "claude.ai")
+        || host_matches(&host, "chatgpt.com")
+        || host_matches(&host, "chating.io")
+        || host_matches(&host, "macaly.com")
+    {
         return Some("AI");
     }
     if host_matches(&host, "figma.com")
@@ -2093,8 +2109,17 @@ pub fn category_for_url(url: &str) -> Option<&'static str> {
     {
         return Some("Productivity");
     }
-    if host_matches(&host, "x.com") || host_matches(&host, "twitter.com") {
+    if host_matches(&host, "x.com")
+        || host_matches(&host, "twitter.com")
+        || host_matches(&host, "reddit.com")
+    {
         return Some("Social");
+    }
+    if host_matches(&host, "ammaraskar.com")
+        || host_matches(&host, "starlabs.sg")
+        || host_matches(&host, "sensortower.com")
+    {
+        return Some("Research");
     }
     if host_matches(&host, "google.com") {
         return Some("Research");
@@ -5506,30 +5531,39 @@ mod tests {
 
     #[test]
     fn category_uses_url_domain_when_available() {
-        assert_eq!(
-            category_for_activity(
-                "company.thebrowser.dia",
-                "Dia",
-                Some("https://app.slack.com/client/example")
+        for (url, category) in [
+            ("https://app.slack.com/client/example", "Communication"),
+            ("https://meet.google.com/abc-defg-hij", "Communication"),
+            ("https://mail.google.com/mail/u/0", "Email"),
+            ("https://docs.google.com/document/d/example", "Writing"),
+            ("https://calendar.google.com/calendar/u/0/r", "Calendar"),
+            ("https://github.com/org", "Development"),
+            ("https://dash.cloudflare.com/account", "Development"),
+            ("https://example.workers.dev/", "Development"),
+            (
+                "https://console.firebase.google.com/project/example",
+                "Development",
             ),
-            "Communication"
-        );
-        assert_eq!(
-            category_for_activity(
-                "company.thebrowser.dia",
-                "Dia",
-                Some("https://github.com/org")
+            ("https://traefik.io/traefik", "Development"),
+            ("https://d2lang.com/tour/intro", "Development"),
+            ("https://chatgpt.com/c/example", "AI"),
+            ("https://www.macaly.com/projects/example", "AI"),
+            ("https://www.reddit.com/r/rust", "Social"),
+            ("https://starlabs.sg/blog/example", "Research"),
+            (
+                "https://blog.ammaraskar.com/github-token-stealing/",
+                "Research",
             ),
-            "Development"
-        );
-        assert_eq!(
-            category_for_activity(
-                "company.thebrowser.dia",
-                "Dia",
-                Some("https://mail.google.com/mail/u/0")
+            (
+                "https://app.sensortower.com/ios/publisher/example",
+                "Research",
             ),
-            "Email"
-        );
+        ] {
+            assert_eq!(
+                category_for_activity("company.thebrowser.dia", "Dia", Some(url)),
+                category
+            );
+        }
     }
 
     #[test]
