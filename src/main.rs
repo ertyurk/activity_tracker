@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::ffi::OsStr;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -395,17 +396,105 @@ struct ServiceLogsArgs {
 
 fn main() -> ExitCode {
     init_tracing();
-    match run() {
+    let json_requested = json_output_requested();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => return exit_with_cli_error(error, json_requested),
+    };
+    exit_with_result(run(cli), json_requested)
+}
+
+fn json_output_requested() -> bool {
+    args_request_json(std::env::args_os())
+}
+
+fn args_request_json<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    args.into_iter()
+        .any(|arg| arg.as_ref() == OsStr::new("--json"))
+}
+
+fn exit_with_result(result: Result<()>, json_requested: bool) -> ExitCode {
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("{error}");
+            if json_requested {
+                print_json_error(tracker_error_code(&error), &error.to_string());
+            } else {
+                eprintln!("{error}");
+            }
             ExitCode::FAILURE
         }
     }
 }
 
-fn run() -> Result<()> {
-    let cli = Cli::parse();
+fn exit_with_cli_error(error: clap::Error, json_requested: bool) -> ExitCode {
+    let success = error.exit_code() == 0;
+    if json_requested {
+        print_json_error("cli_error", &error.to_string());
+    } else {
+        let _ = error.print();
+    }
+    if success {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn print_json_error(code: &'static str, message: &str) {
+    let value = json_error_value(code, message);
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    if let Err(error) = serde_json::to_writer_pretty(&mut handle, &value) {
+        eprintln!("failed to write JSON error: {error}");
+        return;
+    }
+    if let Err(error) = writeln!(handle) {
+        eprintln!("failed to finish JSON error: {error}");
+    }
+}
+
+fn json_error_value(code: &'static str, message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "ok": false,
+        "generated_at": Local::now(),
+        "error": {
+            "code": code,
+            "message": message,
+        },
+    })
+}
+
+fn tracker_error_code(error: &TrackerError) -> &'static str {
+    match error {
+        TrackerError::Io(_) => "io",
+        TrackerError::Csv(_) => "csv",
+        TrackerError::Json(_) => "json",
+        TrackerError::Sqlite(_) => "sqlite",
+        TrackerError::JsonLine { .. } => "json_line",
+        TrackerError::InvalidDate(_) => "invalid_date",
+        TrackerError::InvalidTimestamp(_) => "invalid_timestamp",
+        TrackerError::InvalidDateRange { .. } => "invalid_date_range",
+        TrackerError::InvalidTimeRange { .. } => "invalid_time_range",
+        TrackerError::InvalidDuration(_) => "invalid_duration",
+        TrackerError::ConflictingQueryWindowArgs(_) => "conflicting_query_window_args",
+        TrackerError::MissingCsvColumn(_) => "missing_csv_column",
+        TrackerError::InvalidActivityType(_) => "invalid_activity_type",
+        TrackerError::InvalidLocalDay(_) => "invalid_local_day",
+        TrackerError::AppleScript(_) => "apple_script",
+        TrackerError::Command { .. } => "command",
+        TrackerError::CommandTimeout(_) => "command_timeout",
+        TrackerError::HomeNotFound => "home_not_found",
+        TrackerError::DataDirNotFound => "data_dir_not_found",
+        TrackerError::CtrlC(_) => "ctrlc",
+    }
+}
+
+fn run(cli: Cli) -> Result<()> {
     let store = match cli.data_dir {
         Some(path) => LogStore::new(path),
         None => LogStore::from_env()?,
@@ -1058,7 +1147,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     let now = Local::now();
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 7,
+            "schema_version": 8,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1119,6 +1208,12 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
             "filters": ["--app", "--title", "--url", "--text", "--category", "--domain", "--activity-type", "--limit", "--order"],
             "service_install_args": ["--bin", "--interval-seconds", "--idle-threshold-seconds", "--no-load"],
             "service_status_fields": ["label", "loaded", "running", "pid", "program", "arguments", "stdout_path", "stderr_path", "raw", "error"],
+            "json_error_fields": [
+                "ok",
+                "generated_at",
+                "error.code",
+                "error.message",
+            ],
             "storage_verification_fields": [
                 "ok",
                 "sqlite_path",
@@ -1254,7 +1349,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 7");
+        println!("schema_version: 8");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
@@ -2641,6 +2736,53 @@ mod tests {
             csv_content_matches: ok,
             csv_in_sync: ok,
         }
+    }
+
+    #[test]
+    fn detects_json_flag_for_error_contract() {
+        assert!(args_request_json(["activity_tracker", "query", "--json"]));
+        assert!(args_request_json(["activity_tracker", "--json", "doctor"]));
+        assert!(!args_request_json(["activity_tracker", "query"]));
+    }
+
+    #[test]
+    fn json_error_payload_is_machine_readable() -> anyhow::Result<()> {
+        let value = json_error_value("invalid_date", "bad date");
+        let error = value
+            .get("error")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| anyhow::anyhow!("missing error object"))?;
+
+        assert_eq!(
+            value.get("ok").and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            error.get("code").and_then(serde_json::Value::as_str),
+            Some("invalid_date")
+        );
+        assert_eq!(
+            error.get("message").and_then(serde_json::Value::as_str),
+            Some("bad date")
+        );
+        assert!(value.get("generated_at").is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn tracker_error_codes_are_stable() {
+        assert_eq!(
+            tracker_error_code(&TrackerError::InvalidDate("nope".to_string())),
+            "invalid_date"
+        );
+        assert_eq!(
+            tracker_error_code(&TrackerError::ConflictingQueryWindowArgs("bad window")),
+            "conflicting_query_window_args"
+        );
+        assert_eq!(
+            tracker_error_code(&TrackerError::CommandTimeout("ioreg".to_string())),
+            "command_timeout"
+        );
     }
 
     struct FailingProbe;
