@@ -60,11 +60,13 @@ activity_tracker summary --json
 activity_tracker export --date 2026-06-03 --format csv
 activity_tracker export --date 2026-06-03 --format jsonl
 activity_tracker import-csv ~/Desktop/usage_stats.csv --dry-run --json
+activity_tracker reclassify --dry-run --json
 ```
 
 `report --json` is the preferred one-call payload for AI agents: it includes the day summary, raw sessions, current open-session checkpoint, provisional active session, and storage paths. `day`, `logs`, `summary`, and `report` include the active open session when it overlaps the query; exports stay based on completed sessions.
 `audit --json` reports log quality for a day: gaps above a configurable threshold, overlaps, invalid rows, and current open-session state.
 `service status --json` reports launchd load/running state and PID without requiring agents to parse `launchctl` text.
+`reclassify` recomputes categories from current app and browser-domain rules, useful after improving category mappings.
 
 No subcommand defaults to `track`, preserving the original simple run behavior.
 
@@ -101,6 +103,7 @@ activity_tracker import-csv ~/Desktop/usage_stats.csv --json
 ```
 
 Imports skip duplicates using session start/end/app/bundle/title/url/activity type.
+Categories are app-aware and domain-aware. Browser sessions can classify as Communication, Email, Calendar, Development, AI, Design, Productivity, Social, or Research based on URL domain.
 
 ## Data Contract
 

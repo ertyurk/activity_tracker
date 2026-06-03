@@ -9,6 +9,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - Local-only by default. Do not send activity data to network services.
 - Source of truth is SQLite at `~/.activity_tracker/activity.db`; JSONL is mirror/fallback; CSV is an export/view.
 - Preserve timestamps, app name, bundle ID, category, title, URL when available, and exact duration.
+- Categories should use app identity and browser URL domain when available; run `reclassify` after category rules improve.
 - Preserve `activity_type` and treat idle as first-class log data, not as foreground app time.
 - Keep an `open_session` heartbeat checkpoint so service restarts recover the current span instead of dropping it.
 - Live query commands should include the current open session provisionally; exports should stay completed-session based.
@@ -42,6 +43,7 @@ cargo run -- logs 2026-06-03 --title project --json
 cargo run -- logs 2026-06-03 --activity-type idle --json
 cargo run -- export --date 2026-06-03 --format csv
 cargo run -- import-csv ~/Desktop/usage_stats.csv --dry-run --json
+cargo run -- reclassify --dry-run --json
 ```
 
 ## Repo-Local Skill

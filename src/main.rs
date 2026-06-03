@@ -50,6 +50,8 @@ enum Command {
     Export(ExportArgs),
     /// Import legacy/exported CSV into local storage with duplicate skipping.
     ImportCsv(ImportCsvArgs),
+    /// Recompute categories from current app/domain rules.
+    Reclassify(ReclassifyArgs),
     /// Print storage and service paths.
     Paths(OutputArgs),
     /// Check macOS permissions, probes, and writable storage.
@@ -135,6 +137,14 @@ struct ImportCsvArgs {
     json: bool,
 }
 
+#[derive(Debug, Args)]
+struct ReclassifyArgs {
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    json: bool,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ExportFormat {
     Csv,
@@ -192,6 +202,7 @@ fn run() -> Result<()> {
         Command::Summary(args) => print_summary(&store, args),
         Command::Export(args) => export_sessions(&store, args),
         Command::ImportCsv(args) => import_csv(&store, args),
+        Command::Reclassify(args) => reclassify(&store, args),
         Command::Paths(args) => print_paths(&store, args),
         Command::Doctor(args) => doctor(&store, args),
         Command::Service(command) => run_service(&store, command),
@@ -444,6 +455,18 @@ fn import_csv(store: &LogStore, args: ImportCsvArgs) -> Result<()> {
         println!("scanned: {}", report.scanned);
         println!("imported: {}", report.imported);
         println!("skipped_duplicates: {}", report.skipped_duplicates);
+        println!("dry_run: {}", yes_no(report.dry_run));
+        Ok(())
+    }
+}
+
+fn reclassify(store: &LogStore, args: ReclassifyArgs) -> Result<()> {
+    let report = store.reclassify_sessions(args.dry_run)?;
+    if args.json {
+        print_json(&report)
+    } else {
+        println!("scanned: {}", report.scanned);
+        println!("changed: {}", report.changed);
         println!("dry_run: {}", yes_no(report.dry_run));
         Ok(())
     }

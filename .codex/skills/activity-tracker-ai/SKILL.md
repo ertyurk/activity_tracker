@@ -19,6 +19,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 6. Narrow logs with `--app`, `--title`, `--category`, `--domain`, `--activity-type active|idle`, and `--limit`.
 7. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
 8. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
+9. After category rule changes, run `cargo run -- reclassify --dry-run --json`, then rerun without `--dry-run`.
 
 ## Operations
 
@@ -35,6 +36,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Persist each completed session immediately to SQLite and mirror it to JSONL; CSV is derived.
 - Maintain the SQLite `open_session` heartbeat so crash/restart recovery does not lose the active span.
 - Include the provisional open session in live query commands (`day`, `logs`, `summary`, `report`) when it overlaps the query.
+- Use app identity plus browser URL domains for categories; reclassify stored sessions when mappings change.
 - Preserve current session through short active-app probe misses; only create gaps after repeated misses.
 - Record idle as `activity_type: "idle"` with `bundle_id: "local.activity_tracker.idle"` once HID idle time crosses threshold.
 - Day math must include overlapping sessions and clip summary duration to local day bounds.

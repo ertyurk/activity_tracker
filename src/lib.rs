@@ -247,6 +247,13 @@ pub struct ImportReport {
     pub dry_run: bool,
 }
 
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct ReclassifyReport {
+    pub scanned: usize,
+    pub changed: usize,
+    pub dry_run: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionCheckpoint {
     pub start_time: DateTime<Local>,
@@ -608,6 +615,35 @@ impl LogStore {
         Ok(report)
     }
 
+    pub fn reclassify_sessions(&self, dry_run: bool) -> Result<ReclassifyReport> {
+        self.ensure_dirs()?;
+        let sessions = self.load_sessions_from_db()?;
+        let mut report = ReclassifyReport {
+            dry_run,
+            ..ReclassifyReport::default()
+        };
+
+        for session in sessions {
+            report.scanned += 1;
+            let category = category_for_session(&session);
+            if category == session.category {
+                continue;
+            }
+
+            report.changed += 1;
+            if !dry_run {
+                self.update_session_category(&session, &category)?;
+            }
+        }
+
+        if !dry_run && report.changed > 0 {
+            self.rewrite_jsonl_mirror_from_db()?;
+            self.refresh_default_csv()?;
+        }
+
+        Ok(report)
+    }
+
     pub fn checkpoint_session(
         &self,
         entity: &ActiveEntity,
@@ -816,6 +852,32 @@ impl LogStore {
         Ok(changed > 0)
     }
 
+    fn update_session_category(&self, session: &UsageSession, category: &str) -> Result<()> {
+        let conn = Connection::open(self.db_path())?;
+        conn.execute(
+            "UPDATE sessions
+             SET category = ?1
+             WHERE start_time = ?2
+               AND end_time = ?3
+               AND app_name = ?4
+               AND bundle_id = ?5
+               AND title IS ?6
+               AND url IS ?7
+               AND activity_type = ?8",
+            params![
+                category,
+                session.start_time.to_rfc3339(),
+                session.end_time.to_rfc3339(),
+                &session.app_name,
+                &session.bundle_id,
+                &session.title,
+                &session.url,
+                session.activity_type.to_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
     fn append_session_jsonl(&self, session: &UsageSession) -> Result<()> {
         let mut file = OpenOptions::new()
             .create(true)
@@ -1012,6 +1074,25 @@ pub fn day_bounds(date: NaiveDate) -> Result<(DateTime<Local>, DateTime<Local>)>
 }
 
 #[must_use]
+pub fn category_for_activity(bundle_id: &str, name: &str, url: Option<&str>) -> String {
+    url.and_then(category_for_url)
+        .map(str::to_string)
+        .unwrap_or_else(|| category_for(bundle_id, name))
+}
+
+#[must_use]
+pub fn category_for_session(session: &UsageSession) -> String {
+    if session.activity_type == ActivityType::Idle {
+        return "Idle".to_string();
+    }
+    category_for_activity(
+        &session.bundle_id,
+        &session.app_name,
+        session.url.as_deref(),
+    )
+}
+
+#[must_use]
 pub fn category_for(bundle_id: &str, name: &str) -> String {
     match bundle_id {
         "company.thebrowser.Browser"
@@ -1044,6 +1125,55 @@ pub fn category_for(bundle_id: &str, name: &str) -> String {
         _ => "Uncategorized",
     }
     .to_string()
+}
+
+#[must_use]
+pub fn category_for_url(url: &str) -> Option<&'static str> {
+    let host = domain_from_url(url)?;
+    if host_matches(&host, "slack.com") || host_matches(&host, "whatsapp.com") {
+        return Some("Communication");
+    }
+    if host == "mail.google.com" {
+        return Some("Email");
+    }
+    if host == "calendar.google.com" {
+        return Some("Calendar");
+    }
+    if host_matches(&host, "github.com")
+        || host == "localhost"
+        || host_matches(&host, "leanscale.com")
+    {
+        return Some("Development");
+    }
+    if host_matches(&host, "claude.ai") || host_matches(&host, "chating.io") {
+        return Some("AI");
+    }
+    if host_matches(&host, "figma.com")
+        || host_matches(&host, "mermaid.ai")
+        || host_matches(&host, "ilograph.com")
+    {
+        return Some("Design");
+    }
+    if host_matches(&host, "clickup.com")
+        || host_matches(&host, "notion.so")
+        || host_matches(&host, "ottokeep.com")
+    {
+        return Some("Productivity");
+    }
+    if host_matches(&host, "x.com") || host_matches(&host, "twitter.com") {
+        return Some("Social");
+    }
+    if host_matches(&host, "google.com") {
+        return Some("Research");
+    }
+    None
+}
+
+fn host_matches(host: &str, domain: &str) -> bool {
+    host == domain
+        || host
+            .strip_suffix(domain)
+            .is_some_and(|prefix| prefix.ends_with('.'))
 }
 
 #[must_use]
@@ -1107,7 +1237,7 @@ impl ActivityProbe for MacOsProbe {
         } else {
             active_window_title()
         };
-        let category = category_for(&bundle_id, &name);
+        let category = category_for_activity(&bundle_id, &name, url.as_deref());
         Ok(Some(ActiveEntity {
             bundle_id,
             name,
@@ -1741,9 +1871,10 @@ impl CsvColumns {
             .unwrap_or(0.0);
         let app_name = field(record, self.app_name).to_string();
         let bundle_id = field(record, self.bundle_id).to_string();
+        let url = non_empty_borrowed(field(record, self.url)).map(str::to_string);
         let category = non_empty_borrowed(field(record, self.category))
             .map(str::to_string)
-            .unwrap_or_else(|| category_for(&bundle_id, &app_name));
+            .unwrap_or_else(|| category_for_activity(&bundle_id, &app_name, url.as_deref()));
         let activity_type = self
             .activity_type
             .map_or(Ok(ActivityType::Active), |idx| field(record, idx).parse())?;
@@ -1758,7 +1889,7 @@ impl CsvColumns {
                 .title
                 .and_then(|idx| non_empty_borrowed(field(record, idx)).map(str::to_string)),
             category,
-            url: non_empty_borrowed(field(record, self.url)).map(str::to_string),
+            url,
             activity_type,
         })
     }
@@ -2119,6 +2250,38 @@ mod tests {
     }
 
     #[test]
+    fn reclassify_sessions_updates_domain_categories() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let end = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing end"))?;
+        let mut session = UsageSession::from_entity(&entity(), start, end)
+            .ok_or_else(|| anyhow::anyhow!("missing session"))?;
+        session.category = "Browser".to_string();
+        session.url = Some("https://app.slack.com/client/example".to_string());
+
+        store.append_session(&session)?;
+        let dry_run = store.reclassify_sessions(true)?;
+        let report = store.reclassify_sessions(false)?;
+        let sessions = store.load_sessions()?;
+
+        assert_eq!(dry_run.scanned, 1);
+        assert_eq!(dry_run.changed, 1);
+        assert_eq!(report.changed, 1);
+        assert_eq!(
+            sessions.first().map(|session| session.category.as_str()),
+            Some("Communication")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn import_csv_dry_run_does_not_write() -> AnyhowResult<()> {
         let dir = tempfile::tempdir()?;
         let store = LogStore::new(dir.path().join("store"));
@@ -2304,6 +2467,34 @@ mod tests {
             "System"
         );
         assert_eq!(category_for("com.cmuxterm.app", "cmux"), "Development");
+    }
+
+    #[test]
+    fn category_uses_url_domain_when_available() {
+        assert_eq!(
+            category_for_activity(
+                "company.thebrowser.dia",
+                "Dia",
+                Some("https://app.slack.com/client/example")
+            ),
+            "Communication"
+        );
+        assert_eq!(
+            category_for_activity(
+                "company.thebrowser.dia",
+                "Dia",
+                Some("https://github.com/org")
+            ),
+            "Development"
+        );
+        assert_eq!(
+            category_for_activity(
+                "company.thebrowser.dia",
+                "Dia",
+                Some("https://mail.google.com/mail/u/0")
+            ),
+            "Email"
+        );
     }
 
     #[test]
