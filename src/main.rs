@@ -1058,7 +1058,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     let now = Local::now();
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 6,
+            "schema_version": 7,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1155,6 +1155,8 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "idle_probe_ok",
                 "idle_probe_error",
                 "idle_seconds",
+                "service",
+                "service_running",
                 "storage_verification",
                 "sqlite",
                 "sessions_path",
@@ -1252,7 +1254,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 6");
+        println!("schema_version: 7");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
@@ -1630,6 +1632,8 @@ struct DoctorReport {
     idle_probe_ok: bool,
     idle_probe_error: Option<String>,
     idle_seconds: Option<f64>,
+    service: activity_tracker::ServiceStatusReport,
+    service_running: bool,
     storage_verification: activity_tracker::StorageVerification,
     sqlite: PathBuf,
     sessions_path: PathBuf,
@@ -1648,7 +1652,7 @@ struct DiagnosticCheck<T> {
 
 fn doctor(store: &LogStore, args: OutputArgs) -> Result<()> {
     let probe = MacOsProbe;
-    let report = build_doctor_report(store, &probe, check_osascript())?;
+    let report = build_doctor_report(store, &probe, check_osascript(), service_status_report())?;
 
     if args.json {
         print_json(&report)
@@ -1662,6 +1666,7 @@ fn build_doctor_report<P: ActivityProbe>(
     store: &LogStore,
     probe: &P,
     osascript: DiagnosticCheck<()>,
+    service: activity_tracker::ServiceStatusReport,
 ) -> Result<DoctorReport> {
     store.ensure_dirs()?;
     let checkpoint = store.open_session_checkpoint()?;
@@ -1678,7 +1683,11 @@ fn build_doctor_report<P: ActivityProbe>(
     if !storage_verification.ok {
         hints.push("run_activity_tracker_verify_json_or_repair_mirror_json".to_string());
     }
-    let ok = osascript.ok && active.ok && idle.ok && storage_verification.ok;
+    if !service.running {
+        hints.push("install_or_start_launchd_service".to_string());
+    }
+    let service_running = service.running;
+    let ok = osascript.ok && active.ok && idle.ok && storage_verification.ok && service_running;
 
     Ok(DoctorReport {
         generated_at: Local::now(),
@@ -1692,6 +1701,8 @@ fn build_doctor_report<P: ActivityProbe>(
         idle_probe_ok: idle.ok,
         idle_probe_error: idle.error,
         idle_seconds: idle.value,
+        service,
+        service_running,
         storage_verification,
         sqlite: store.db_path(),
         sessions_path: store.sessions_path(),
@@ -1777,6 +1788,10 @@ fn print_doctor_text(report: &DoctorReport) {
     }
     if let Some(seconds) = report.idle_seconds {
         println!("idle_seconds: {seconds:.1}");
+    }
+    println!("service_running: {}", yes_no(report.service_running));
+    if let Some(pid) = report.service.pid {
+        println!("service_pid: {pid}");
     }
     println!(
         "storage_verified: {}",
@@ -2686,6 +2701,7 @@ mod tests {
                 value: None,
                 error: Some("osascript unavailable".to_string()),
             },
+            service_report(true),
         )?;
 
         assert!(!report.ok);
@@ -2726,6 +2742,7 @@ mod tests {
                 value: Some(()),
                 error: None,
             },
+            service_report(true),
         )?;
 
         assert!(report.ok);
@@ -2733,6 +2750,31 @@ mod tests {
         assert!(report.idle_probe_ok);
         assert!(report.storage_verification.ok);
         assert!(report.hints.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_report_requires_running_service() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let report = build_doctor_report(
+            &store,
+            &IdleProbe,
+            DiagnosticCheck {
+                ok: true,
+                value: Some(()),
+                error: None,
+            },
+            service_report(false),
+        )?;
+
+        assert!(!report.ok);
+        assert!(!report.service_running);
+        assert!(
+            report
+                .hints
+                .contains(&"install_or_start_launchd_service".to_string())
+        );
         Ok(())
     }
 

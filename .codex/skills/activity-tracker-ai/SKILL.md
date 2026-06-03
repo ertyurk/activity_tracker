@@ -97,7 +97,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Keep `service install` LaunchAgent arguments aligned with configured sample interval and idle threshold.
 - Keep `service status --json` normalized enough for agents to inspect program, arguments, and log paths without parsing raw `launchctl` text.
 - Keep `service logs --json` bounded and path-aware so agents can inspect launchd stdout/stderr tails without shell-specific file reads.
-- Keep `doctor --json` non-fatal for active-app or idle probe failures; expose probe status/error fields, storage verification, and hints so setup agents can diagnose permissions.
+- Keep `doctor --json` non-fatal for active-app or idle probe failures; expose probe status/error fields, launchd service state, storage verification, and hints so setup agents can diagnose permissions/service setup.
 - Canonicalize known browser blank tabs as `about:newtab` and keep them separate from actionable missing-URL audit rows.
 - Record idle as `activity_type: "idle"` with `bundle_id: "local.activity_tracker.idle"` once HID idle time crosses threshold.
 - Record longer unknown/probe-unavailable spans as `activity_type: "untracked"` when probing recovers.
