@@ -10,10 +10,10 @@ use activity_tracker::{
     ActivityProbe, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS, DEFAULT_IDLE_THRESHOLD_SECONDS,
     DEFAULT_INTERVAL_SECONDS, DEFAULT_PROBE_MISS_TOLERANCE, DEFAULT_RECENT_CHECKPOINT_SECONDS,
     LogStore, MacOsProbe, ProbeMissStabilizer, QueryTimeWindowInput, Result, TrackerError,
-    TrackerState, UsageSession, audit_sessions, day_bounds, filter_sessions,
-    filter_sessions_by_time_window, format_seconds, install_launch_agent, legacy_data_dir,
-    legacy_sessions_path, parse_date, query_time_window, service_status, service_status_report,
-    summarize_all, summarize_day, timeline_blocks, uninstall_launch_agent,
+    TrackerState, UsageSession, audit_sessions, day_bounds, filter_sessions, format_seconds,
+    install_launch_agent, legacy_data_dir, legacy_sessions_path, parse_date, query_time_window,
+    service_status, service_status_report, summarize_all, summarize_day, timeline_blocks,
+    uninstall_launch_agent,
 };
 use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -442,8 +442,12 @@ fn print_query(store: &LogStore, args: QueryArgs) -> Result<()> {
         },
         now,
     )?;
-    let sessions = store.load_sessions_with_open(now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
-    let sessions = filter_sessions_by_time_window(sessions, window.start, window.end);
+    let sessions = store.sessions_in_window_with_open(
+        window.start,
+        window.end,
+        now,
+        DEFAULT_RECENT_CHECKPOINT_SECONDS,
+    )?;
     let sessions = filter_sessions(
         sessions,
         args.app.as_deref(),

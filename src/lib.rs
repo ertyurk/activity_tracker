@@ -10,7 +10,7 @@ use std::time::{Duration as StdDuration, Instant};
 
 use chrono::{DateTime, Datelike, Local, LocalResult, NaiveDate, TimeDelta, TimeZone};
 use csv::Writer;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, Row, params};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -521,6 +521,7 @@ impl LogStore {
 
     pub fn load_sessions(&self) -> Result<Vec<UsageSession>> {
         if self.db_path().exists() {
+            self.ensure_database_ready()?;
             return self.load_sessions_from_db();
         }
         if self.sessions_path().exists() {
@@ -535,6 +536,23 @@ impl LogStore {
         Ok(Vec::new())
     }
 
+    pub fn sessions_in_window(
+        &self,
+        window_start: Option<DateTime<Local>>,
+        window_end: Option<DateTime<Local>>,
+    ) -> Result<Vec<UsageSession>> {
+        if self.db_path().exists() {
+            self.ensure_database_ready()?;
+            return self.load_sessions_from_db_window(window_start, window_end);
+        }
+
+        Ok(filter_sessions_by_time_window(
+            self.load_sessions()?,
+            window_start,
+            window_end,
+        ))
+    }
+
     fn load_sessions_from_jsonl(&self) -> Result<Vec<UsageSession>> {
         let path = self.sessions_path();
         if !path.exists() {
@@ -545,26 +563,57 @@ impl LogStore {
     }
 
     fn load_sessions_from_db(&self) -> Result<Vec<UsageSession>> {
+        self.load_sessions_from_db_window(None, None)
+    }
+
+    fn load_sessions_from_db_window(
+        &self,
+        window_start: Option<DateTime<Local>>,
+        window_end: Option<DateTime<Local>>,
+    ) -> Result<Vec<UsageSession>> {
+        match (
+            window_start.map(|time| time.timestamp_millis()),
+            window_end.map(|time| time.timestamp_millis()),
+        ) {
+            (Some(start), Some(end)) => self.query_sessions_from_db(
+                "SELECT start_time, end_time, duration_seconds, app_name, bundle_id, title, category, url, activity_type
+                 FROM sessions
+                 WHERE end_unix_ms > ?1 AND start_unix_ms < ?2
+                 ORDER BY start_unix_ms, end_unix_ms, id",
+                params![start, end],
+            ),
+            (Some(start), None) => self.query_sessions_from_db(
+                "SELECT start_time, end_time, duration_seconds, app_name, bundle_id, title, category, url, activity_type
+                 FROM sessions
+                 WHERE end_unix_ms > ?1
+                 ORDER BY start_unix_ms, end_unix_ms, id",
+                params![start],
+            ),
+            (None, Some(end)) => self.query_sessions_from_db(
+                "SELECT start_time, end_time, duration_seconds, app_name, bundle_id, title, category, url, activity_type
+                 FROM sessions
+                 WHERE start_unix_ms < ?1
+                 ORDER BY start_unix_ms, end_unix_ms, id",
+                params![end],
+            ),
+            (None, None) => self.query_sessions_from_db(
+                "SELECT start_time, end_time, duration_seconds, app_name, bundle_id, title, category, url, activity_type
+                 FROM sessions
+                 ORDER BY start_unix_ms, end_unix_ms, id",
+                [],
+            ),
+        }
+    }
+
+    fn query_sessions_from_db<P: rusqlite::Params>(
+        &self,
+        sql: &str,
+        params: P,
+    ) -> Result<Vec<UsageSession>> {
         let conn = Connection::open(self.db_path())?;
-        let mut stmt = conn.prepare(
-            "SELECT start_time, end_time, duration_seconds, app_name, bundle_id, title, category, url, activity_type
-             FROM sessions
-             ORDER BY start_time, end_time, id",
-        )?;
+        let mut stmt = conn.prepare(sql)?;
         let rows = stmt
-            .query_map([], |row| {
-                Ok(DbSessionRow {
-                    start_time: row.get(0)?,
-                    end_time: row.get(1)?,
-                    duration_seconds: row.get(2)?,
-                    app_name: row.get(3)?,
-                    bundle_id: row.get(4)?,
-                    title: row.get(5)?,
-                    category: row.get(6)?,
-                    url: row.get(7)?,
-                    activity_type: row.get(8)?,
-                })
-            })?
+            .query_map(params, db_session_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         rows.into_iter().map(DbSessionRow::into_session).collect()
@@ -572,11 +621,7 @@ impl LogStore {
 
     pub fn sessions_for_day(&self, date: NaiveDate) -> Result<Vec<UsageSession>> {
         let (start, end) = day_bounds(date)?;
-        Ok(self
-            .load_sessions()?
-            .into_iter()
-            .filter(|session| session.overlaps(start, end))
-            .collect())
+        self.sessions_in_window(Some(start), Some(end))
     }
 
     pub fn load_sessions_with_open(
@@ -598,11 +643,24 @@ impl LogStore {
         recent_gap_seconds: u64,
     ) -> Result<Vec<UsageSession>> {
         let (start, end) = day_bounds(date)?;
-        Ok(self
-            .load_sessions_with_open(now, recent_gap_seconds)?
-            .into_iter()
-            .filter(|session| session.overlaps(start, end))
-            .collect())
+        self.sessions_in_window_with_open(Some(start), Some(end), now, recent_gap_seconds)
+    }
+
+    pub fn sessions_in_window_with_open(
+        &self,
+        window_start: Option<DateTime<Local>>,
+        window_end: Option<DateTime<Local>>,
+        now: DateTime<Local>,
+        recent_gap_seconds: u64,
+    ) -> Result<Vec<UsageSession>> {
+        let mut sessions = self.sessions_in_window(window_start, window_end)?;
+        if let Some(session) = self.provisional_open_session(now, recent_gap_seconds)?
+            && window_start.is_none_or(|start| session.end_time > start)
+            && window_end.is_none_or(|end| session.start_time < end)
+        {
+            sessions.push(session);
+        }
+        Ok(sessions)
     }
 
     pub fn write_csv(&self, path: &Path, sessions: &[UsageSession]) -> Result<()> {
@@ -841,6 +899,8 @@ impl LogStore {
                  category TEXT NOT NULL,
                  url TEXT,
                  activity_type TEXT NOT NULL DEFAULT 'active',
+                 start_unix_ms INTEGER,
+                 end_unix_ms INTEGER,
                  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
              );
              CREATE UNIQUE INDEX IF NOT EXISTS sessions_unique_idx
@@ -865,6 +925,56 @@ impl LogStore {
                  activity_type TEXT NOT NULL DEFAULT 'active'
              );",
         )?;
+        self.ensure_session_epoch_columns(&conn)?;
+        Ok(())
+    }
+
+    fn ensure_session_epoch_columns(&self, conn: &Connection) -> Result<()> {
+        if !table_column_exists(conn, "sessions", "start_unix_ms")? {
+            conn.execute("ALTER TABLE sessions ADD COLUMN start_unix_ms INTEGER", [])?;
+        }
+        if !table_column_exists(conn, "sessions", "end_unix_ms")? {
+            conn.execute("ALTER TABLE sessions ADD COLUMN end_unix_ms INTEGER", [])?;
+        }
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS sessions_time_idx
+             ON sessions (start_unix_ms, end_unix_ms, id)",
+            [],
+        )?;
+        self.backfill_session_epoch_columns(conn)?;
+        Ok(())
+    }
+
+    fn backfill_session_epoch_columns(&self, conn: &Connection) -> Result<()> {
+        let mut stmt = conn.prepare(
+            "SELECT id, start_time, end_time
+             FROM sessions
+             WHERE start_unix_ms IS NULL OR end_unix_ms IS NULL",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(DbEpochBackfillRow {
+                    id: row.get(0)?,
+                    start_time: row.get(1)?,
+                    end_time: row.get(2)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        for row in rows {
+            let start_time = parse_local_datetime(&row.start_time)?;
+            let end_time = parse_local_datetime(&row.end_time)?;
+            conn.execute(
+                "UPDATE sessions
+                 SET start_unix_ms = ?1, end_unix_ms = ?2
+                 WHERE id = ?3",
+                params![
+                    start_time.timestamp_millis(),
+                    end_time.timestamp_millis(),
+                    row.id
+                ],
+            )?;
+        }
         Ok(())
     }
 
@@ -931,8 +1041,8 @@ impl LogStore {
         let conn = Connection::open(self.db_path())?;
         let changed = conn.execute(
             "INSERT OR IGNORE INTO sessions
-             (start_time, end_time, duration_seconds, app_name, bundle_id, title, category, url, activity_type)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             (start_time, end_time, duration_seconds, app_name, bundle_id, title, category, url, activity_type, start_unix_ms, end_unix_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 session.start_time.to_rfc3339(),
                 session.end_time.to_rfc3339(),
@@ -943,6 +1053,8 @@ impl LogStore {
                 &session.category,
                 &session.url,
                 session.activity_type.to_string(),
+                session.start_time.timestamp_millis(),
+                session.end_time.timestamp_millis(),
             ],
         )?;
         Ok(changed > 0)
@@ -2188,6 +2300,14 @@ fn field(record: &csv::StringRecord, idx: usize) -> &str {
     record.get(idx).unwrap_or("")
 }
 
+fn table_column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(columns.iter().any(|existing| existing == column))
+}
+
 fn non_empty_borrowed(value: &str) -> Option<&str> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -2208,6 +2328,27 @@ struct DbSessionRow {
     category: String,
     url: Option<String>,
     activity_type: String,
+}
+
+#[derive(Debug, Clone)]
+struct DbEpochBackfillRow {
+    id: i64,
+    start_time: String,
+    end_time: String,
+}
+
+fn db_session_row(row: &Row<'_>) -> rusqlite::Result<DbSessionRow> {
+    Ok(DbSessionRow {
+        start_time: row.get(0)?,
+        end_time: row.get(1)?,
+        duration_seconds: row.get(2)?,
+        app_name: row.get(3)?,
+        bundle_id: row.get(4)?,
+        title: row.get(5)?,
+        category: row.get(6)?,
+        url: row.get(7)?,
+        activity_type: row.get(8)?,
+    })
 }
 
 impl DbSessionRow {
@@ -2372,6 +2513,13 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(store.sessions_for_day(parse_date("2026-06-03")?)?.len(), 1);
         assert_eq!(store.sessions_for_day(parse_date("2026-06-04")?)?.len(), 1);
+        let (window_start, window_end) = day_bounds(parse_date("2026-06-03")?)?;
+        assert_eq!(
+            store
+                .sessions_in_window(Some(window_start), Some(window_end))?
+                .len(),
+            1
+        );
         Ok(())
     }
 
@@ -2399,6 +2547,59 @@ mod tests {
         assert_eq!(
             mirrored.first().map(|session| &session.app_name),
             Some(&session.app_name)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ensure_dirs_migrates_epoch_columns_for_existing_db() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        fs::create_dir_all(dir.path())?;
+        let conn = Connection::open(store.db_path())?;
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                duration_seconds REAL NOT NULL,
+                app_name TEXT NOT NULL,
+                bundle_id TEXT NOT NULL,
+                title TEXT,
+                category TEXT NOT NULL,
+                url TEXT,
+                activity_type TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            INSERT INTO sessions (
+                start_time, end_time, duration_seconds, app_name, bundle_id, title, category, url, activity_type
+            ) VALUES (
+                '2026-06-03T08:00:00+02:00',
+                '2026-06-03T08:01:00+02:00',
+                60.0,
+                'Dia',
+                'company.thebrowser.dia',
+                'Project',
+                'Browser',
+                'https://github.com/org',
+                'active'
+            );",
+        )?;
+        drop(conn);
+
+        store.ensure_dirs()?;
+        let conn = Connection::open(store.db_path())?;
+        assert!(table_column_exists(&conn, "sessions", "start_unix_ms")?);
+        assert!(table_column_exists(&conn, "sessions", "end_unix_ms")?);
+        let (window_start, window_end) = day_bounds(parse_date("2026-06-03")?)?;
+        let sessions = store.sessions_in_window(Some(window_start), Some(window_end))?;
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions
+                .first()
+                .map(|session| session.start_time.timestamp_millis()),
+            Some(parse_local_datetime("2026-06-03T08:00:00+02:00")?.timestamp_millis())
         );
         Ok(())
     }

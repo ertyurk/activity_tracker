@@ -8,6 +8,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 
 - Local-only by default. Do not send activity data to network services.
 - Source of truth is SQLite at `~/.activity_tracker/activity.db`; JSONL is mirror/fallback; CSV is an export/view.
+- Keep day/range reads backed by indexed SQLite time columns; do not scan all history for routine queries.
 - Preserve timestamps, app name, bundle ID, category, title, URL when available, and exact duration.
 - Categories should use app identity and browser URL domain when available; run `reclassify` after category rules improve.
 - Preserve `activity_type` and treat idle as first-class log data, not as foreground app time.

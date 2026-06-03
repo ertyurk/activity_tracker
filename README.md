@@ -11,6 +11,7 @@ In-progress local-first macOS activity tracker for building near-perfect persona
 - Captures browser URL when AppleScript supports the active browser.
 - Captures active browser tab/window title when macOS reports it.
 - Stores source-of-truth logs in SQLite under `~/.activity_tracker/activity.db`.
+- Maintains indexed epoch timestamps in SQLite for scalable day/range queries.
 - Mirrors completed sessions to JSONL for audit/export fallback.
 - Maintains an open-session checkpoint so a restart can recover the active span instead of losing it.
 - Generates CSV exports for spreadsheet workflows.

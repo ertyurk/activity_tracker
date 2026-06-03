@@ -38,6 +38,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 ## Implementation Rules
 
 - Keep storage/query code testable without macOS permissions.
+- Keep routine day/range reads backed by SQLite indexed time columns rather than all-history scans.
 - Persist each completed session immediately to SQLite and mirror it to JSONL; CSV is derived.
 - Maintain the SQLite `open_session` heartbeat so crash/restart recovery does not lose the active span.
 - Include the provisional open session in live query commands (`day`, `logs`, `query`, `summary`, `report`) when it overlaps the query.
