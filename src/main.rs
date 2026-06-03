@@ -31,6 +31,257 @@ use tracing_subscriber::EnvFilter;
 const DEFAULT_AGENT_LAST_MINUTES: u64 = 120;
 const DEFAULT_AGENT_TIMELINE_LIMIT: usize = 20;
 const DEFAULT_AGENT_SUMMARY_LIMIT: usize = 12;
+const SCHEMA_VERSION: u64 = 21;
+const SERVICE_INSTALL_BINARY_REQUIREMENTS: &[&str] =
+    &["absolute_path", "exists", "regular_file", "executable"];
+const PATHS_FIELDS: &[&str] = &[
+    "root",
+    "sqlite",
+    "sessions_jsonl",
+    "csv",
+    "exports",
+    "logs",
+    "legacy_root",
+    "legacy_sessions_jsonl",
+];
+const SUMMARY_ROW_FIELDS: &[&str] = &["name", "seconds", "percentage"];
+const SUMMARY_FIELDS: &[&str] = &[
+    "session_count",
+    "total_seconds",
+    "by_activity_type",
+    "by_category",
+    "by_app",
+    "by_domain",
+];
+const TIMELINE_BLOCK_FIELDS: &[&str] = &[
+    "start_time",
+    "end_time",
+    "duration_seconds",
+    "activity_type",
+    "category",
+    "app_name",
+    "bundle_id",
+    "domain",
+    "title",
+    "url",
+    "session_count",
+];
+const INVENTORY_ROW_FIELDS: &[&str] = &[
+    "name",
+    "secondary",
+    "seconds",
+    "percentage",
+    "session_count",
+    "first_seen",
+    "last_seen",
+    "latest_title",
+    "latest_url",
+];
+const INVENTORY_FIELDS: &[&str] = &[
+    "generated_at",
+    "limit",
+    "window",
+    "session_count",
+    "total_seconds",
+    "by_activity_type",
+    "by_category",
+    "by_app",
+    "by_domain",
+];
+const QUERY_FILTER_FIELDS: &[&str] = &[
+    "app",
+    "title",
+    "url",
+    "text",
+    "category",
+    "domain",
+    "activity_type",
+    "limit",
+    "order",
+];
+const QUERY_FIELDS: &[&str] = &[
+    "generated_at",
+    "from",
+    "to",
+    "since",
+    "until",
+    "last_minutes",
+    "window_start",
+    "window_end",
+    "filters",
+    "summary",
+    "timeline",
+    "sessions",
+    "open_session",
+];
+const REPORT_FIELDS: &[&str] = &[
+    "date",
+    "generated_at",
+    "summary",
+    "timeline",
+    "sessions",
+    "active_session",
+    "open_session",
+    "includes_active_session",
+    "paths",
+];
+const AUDIT_REPORT_FIELDS: &[&str] = &[
+    "date",
+    "window",
+    "generated_at",
+    "gap_threshold_seconds",
+    "summary",
+    "audit",
+    "includes_active_session",
+    "open_session",
+];
+const AUDIT_FIELDS: &[&str] = &[
+    "session_count",
+    "gap_count",
+    "overlap_count",
+    "invalid_session_count",
+    "active_session_count",
+    "idle_session_count",
+    "untracked_session_count",
+    "missing_title_count",
+    "browser_session_count",
+    "browser_missing_url_count",
+    "browser_blank_tab_count",
+    "browser_context_mismatch_count",
+    "uncategorized_session_count",
+    "missing_title_by_app",
+    "browser_missing_url_by_app",
+    "browser_missing_url_by_title",
+    "browser_blank_tab_by_app",
+    "browser_context_mismatch_by_domain",
+    "uncategorized_by_app",
+    "quality_issues",
+    "total_gap_seconds",
+    "longest_gap_seconds",
+    "gaps",
+    "overlaps",
+    "invalid_sessions",
+];
+const AUDIT_QUALITY_ROW_FIELDS: &[&str] = &["name", "count"];
+const AUDIT_QUALITY_ISSUE_FIELDS: &[&str] = &[
+    "kind",
+    "start_time",
+    "end_time",
+    "duration_seconds",
+    "app_name",
+    "bundle_id",
+    "title",
+    "category",
+    "url",
+    "activity_type",
+];
+const AUDIT_GAP_FIELDS: &[&str] = &[
+    "start_time",
+    "end_time",
+    "duration_seconds",
+    "previous_app",
+    "next_app",
+];
+const AUDIT_OVERLAP_FIELDS: &[&str] = &[
+    "start_time",
+    "end_time",
+    "duration_seconds",
+    "first_app",
+    "second_app",
+];
+const AUDIT_INVALID_SESSION_FIELDS: &[&str] = &[
+    "start_time",
+    "end_time",
+    "duration_seconds",
+    "app_name",
+    "reason",
+];
+const REPAIR_WINDOW_FIELDS: &[&str] = &[
+    "from",
+    "to",
+    "since",
+    "until",
+    "last_minutes",
+    "start",
+    "end",
+];
+const IMPORT_REPORT_FIELDS: &[&str] = &["scanned", "imported", "skipped_duplicates", "dry_run"];
+const RECLASSIFY_REPORT_FIELDS: &[&str] =
+    &["generated_at", "window", "scanned", "changed", "dry_run"];
+const REPAIR_GAPS_REPORT_FIELDS: &[&str] = &[
+    "generated_at",
+    "window",
+    "scanned",
+    "gaps_found",
+    "repaired",
+    "dry_run",
+];
+const REPAIR_TITLES_REPORT_FIELDS: &[&str] = &[
+    "generated_at",
+    "window",
+    "scanned",
+    "repaired",
+    "native_repaired",
+    "browser_repaired",
+    "dry_run",
+];
+const REPAIR_URLS_REPORT_FIELDS: &[&str] = &[
+    "generated_at",
+    "window",
+    "scanned",
+    "repaired",
+    "blank_tab_urls",
+    "blank_tab_context_urls",
+    "dry_run",
+];
+const REPAIR_CONTEXT_REPORT_FIELDS: &[&str] = &[
+    "generated_at",
+    "window",
+    "scanned",
+    "mismatches_found",
+    "missing_titles_found",
+    "missing_urls_found",
+    "repaired",
+    "title_repaired",
+    "url_repaired",
+    "missing_title_repaired",
+    "missing_url_repaired",
+    "neighbor_repaired",
+    "unique_observation_repaired",
+    "untracked_repaired",
+    "dry_run",
+];
+const REPAIR_MIRROR_REPORT_FIELDS: &[&str] = &[
+    "sqlite_session_count",
+    "jsonl_session_count",
+    "csv_path",
+    "jsonl_path",
+    "repaired",
+];
+const JSON_ERROR_CODES: &[&str] = &[
+    "apple_script",
+    "command",
+    "command_timeout",
+    "conflicting_query_window_args",
+    "ctrlc",
+    "csv",
+    "data_dir_not_found",
+    "home_not_found",
+    "invalid_activity_type",
+    "invalid_date",
+    "invalid_date_range",
+    "invalid_duration",
+    "invalid_local_day",
+    "invalid_service_binary",
+    "invalid_time_range",
+    "invalid_timestamp",
+    "io",
+    "json",
+    "json_line",
+    "missing_command",
+    "missing_csv_column",
+    "sqlite",
+];
 
 #[derive(Debug, Parser)]
 #[command(
@@ -1209,16 +1460,7 @@ fn repair_mirror(store: &LogStore, args: OutputArgs) -> Result<()> {
 
 fn print_paths(store: &LogStore, args: OutputArgs) -> Result<()> {
     if args.json {
-        let value = serde_json::json!({
-            "root": store.root(),
-            "sqlite": store.db_path(),
-            "sessions_jsonl": store.sessions_path(),
-            "csv": store.csv_path(),
-            "exports": store.exports_dir(),
-            "logs": store.logs_dir(),
-            "legacy_root": legacy_data_dir(),
-            "legacy_sessions_jsonl": legacy_sessions_path(),
-        });
+        let value = paths_json_value(store);
         print_json(&value)
     } else {
         println!("root: {}", store.root().display());
@@ -1237,260 +1479,50 @@ fn print_paths(store: &LogStore, args: OutputArgs) -> Result<()> {
     }
 }
 
+fn paths_json_value(store: &LogStore) -> serde_json::Value {
+    serde_json::json!({
+        "root": store.root(),
+        "sqlite": store.db_path(),
+        "sessions_jsonl": store.sessions_path(),
+        "csv": store.csv_path(),
+        "exports": store.exports_dir(),
+        "logs": store.logs_dir(),
+        "legacy_root": legacy_data_dir(),
+        "legacy_sessions_jsonl": legacy_sessions_path(),
+    })
+}
+
 fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     let now = Local::now();
-    let service_install_binary_requirements =
-        ["absolute_path", "exists", "regular_file", "executable"];
-    let paths_fields = [
-        "root",
-        "sqlite",
-        "sessions_jsonl",
-        "csv",
-        "exports",
-        "logs",
-        "legacy_root",
-        "legacy_sessions_jsonl",
-    ];
-    let summary_row_fields = ["name", "seconds", "percentage"];
-    let summary_fields = [
-        "session_count",
-        "total_seconds",
-        "by_activity_type",
-        "by_category",
-        "by_app",
-        "by_domain",
-    ];
-    let timeline_block_fields = [
-        "start_time",
-        "end_time",
-        "duration_seconds",
-        "activity_type",
-        "category",
-        "app_name",
-        "bundle_id",
-        "domain",
-        "title",
-        "url",
-        "session_count",
-    ];
-    let inventory_row_fields = [
-        "name",
-        "secondary",
-        "seconds",
-        "percentage",
-        "session_count",
-        "first_seen",
-        "last_seen",
-        "latest_title",
-        "latest_url",
-    ];
-    let inventory_fields = [
-        "generated_at",
-        "limit",
-        "window",
-        "session_count",
-        "total_seconds",
-        "by_activity_type",
-        "by_category",
-        "by_app",
-        "by_domain",
-    ];
-    let query_filter_fields = [
-        "app",
-        "title",
-        "url",
-        "text",
-        "category",
-        "domain",
-        "activity_type",
-        "limit",
-        "order",
-    ];
-    let query_fields = [
-        "generated_at",
-        "from",
-        "to",
-        "since",
-        "until",
-        "last_minutes",
-        "window_start",
-        "window_end",
-        "filters",
-        "summary",
-        "timeline",
-        "sessions",
-        "open_session",
-    ];
-    let report_fields = [
-        "date",
-        "generated_at",
-        "summary",
-        "timeline",
-        "sessions",
-        "active_session",
-        "open_session",
-        "includes_active_session",
-        "paths",
-    ];
-    let audit_report_fields = [
-        "date",
-        "window",
-        "generated_at",
-        "gap_threshold_seconds",
-        "summary",
-        "audit",
-        "includes_active_session",
-        "open_session",
-    ];
-    let audit_fields = [
-        "session_count",
-        "gap_count",
-        "overlap_count",
-        "invalid_session_count",
-        "active_session_count",
-        "idle_session_count",
-        "untracked_session_count",
-        "missing_title_count",
-        "browser_session_count",
-        "browser_missing_url_count",
-        "browser_blank_tab_count",
-        "browser_context_mismatch_count",
-        "uncategorized_session_count",
-        "missing_title_by_app",
-        "browser_missing_url_by_app",
-        "browser_missing_url_by_title",
-        "browser_blank_tab_by_app",
-        "browser_context_mismatch_by_domain",
-        "uncategorized_by_app",
-        "quality_issues",
-        "total_gap_seconds",
-        "longest_gap_seconds",
-        "gaps",
-        "overlaps",
-        "invalid_sessions",
-    ];
-    let audit_quality_row_fields = ["name", "count"];
-    let audit_quality_issue_fields = [
-        "kind",
-        "start_time",
-        "end_time",
-        "duration_seconds",
-        "app_name",
-        "bundle_id",
-        "title",
-        "category",
-        "url",
-        "activity_type",
-    ];
-    let audit_gap_fields = [
-        "start_time",
-        "end_time",
-        "duration_seconds",
-        "previous_app",
-        "next_app",
-    ];
-    let audit_overlap_fields = [
-        "start_time",
-        "end_time",
-        "duration_seconds",
-        "first_app",
-        "second_app",
-    ];
-    let audit_invalid_session_fields = [
-        "start_time",
-        "end_time",
-        "duration_seconds",
-        "app_name",
-        "reason",
-    ];
-    let repair_window_fields = [
-        "from",
-        "to",
-        "since",
-        "until",
-        "last_minutes",
-        "start",
-        "end",
-    ];
-    let import_report_fields = ["scanned", "imported", "skipped_duplicates", "dry_run"];
-    let reclassify_report_fields = ["generated_at", "window", "scanned", "changed", "dry_run"];
-    let repair_gaps_report_fields = [
-        "generated_at",
-        "window",
-        "scanned",
-        "gaps_found",
-        "repaired",
-        "dry_run",
-    ];
-    let repair_titles_report_fields = [
-        "generated_at",
-        "window",
-        "scanned",
-        "repaired",
-        "native_repaired",
-        "browser_repaired",
-        "dry_run",
-    ];
-    let repair_urls_report_fields = [
-        "generated_at",
-        "window",
-        "scanned",
-        "repaired",
-        "blank_tab_urls",
-        "blank_tab_context_urls",
-        "dry_run",
-    ];
-    let repair_context_report_fields = [
-        "generated_at",
-        "window",
-        "scanned",
-        "mismatches_found",
-        "missing_titles_found",
-        "missing_urls_found",
-        "repaired",
-        "title_repaired",
-        "url_repaired",
-        "missing_title_repaired",
-        "missing_url_repaired",
-        "neighbor_repaired",
-        "unique_observation_repaired",
-        "untracked_repaired",
-        "dry_run",
-    ];
-    let repair_mirror_report_fields = [
-        "sqlite_session_count",
-        "jsonl_session_count",
-        "csv_path",
-        "jsonl_path",
-        "repaired",
-    ];
-    let json_error_codes = [
-        "apple_script",
-        "command",
-        "command_timeout",
-        "conflicting_query_window_args",
-        "ctrlc",
-        "csv",
-        "data_dir_not_found",
-        "home_not_found",
-        "invalid_activity_type",
-        "invalid_date",
-        "invalid_date_range",
-        "invalid_duration",
-        "invalid_local_day",
-        "invalid_service_binary",
-        "invalid_time_range",
-        "invalid_timestamp",
-        "io",
-        "json",
-        "json_line",
-        "missing_command",
-        "missing_csv_column",
-        "sqlite",
-    ];
+    let service_install_binary_requirements = SERVICE_INSTALL_BINARY_REQUIREMENTS;
+    let paths_fields = PATHS_FIELDS;
+    let summary_row_fields = SUMMARY_ROW_FIELDS;
+    let summary_fields = SUMMARY_FIELDS;
+    let timeline_block_fields = TIMELINE_BLOCK_FIELDS;
+    let inventory_row_fields = INVENTORY_ROW_FIELDS;
+    let inventory_fields = INVENTORY_FIELDS;
+    let query_filter_fields = QUERY_FILTER_FIELDS;
+    let query_fields = QUERY_FIELDS;
+    let report_fields = REPORT_FIELDS;
+    let audit_report_fields = AUDIT_REPORT_FIELDS;
+    let audit_fields = AUDIT_FIELDS;
+    let audit_quality_row_fields = AUDIT_QUALITY_ROW_FIELDS;
+    let audit_quality_issue_fields = AUDIT_QUALITY_ISSUE_FIELDS;
+    let audit_gap_fields = AUDIT_GAP_FIELDS;
+    let audit_overlap_fields = AUDIT_OVERLAP_FIELDS;
+    let audit_invalid_session_fields = AUDIT_INVALID_SESSION_FIELDS;
+    let repair_window_fields = REPAIR_WINDOW_FIELDS;
+    let import_report_fields = IMPORT_REPORT_FIELDS;
+    let reclassify_report_fields = RECLASSIFY_REPORT_FIELDS;
+    let repair_gaps_report_fields = REPAIR_GAPS_REPORT_FIELDS;
+    let repair_titles_report_fields = REPAIR_TITLES_REPORT_FIELDS;
+    let repair_urls_report_fields = REPAIR_URLS_REPORT_FIELDS;
+    let repair_context_report_fields = REPAIR_CONTEXT_REPORT_FIELDS;
+    let repair_mirror_report_fields = REPAIR_MIRROR_REPORT_FIELDS;
+    let json_error_codes = JSON_ERROR_CODES;
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 21,
+            "schema_version": SCHEMA_VERSION,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1795,7 +1827,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 21");
+        println!("schema_version: {SCHEMA_VERSION}");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
@@ -3258,7 +3290,7 @@ fn idle_seconds_or_none<P: ActivityProbe>(probe: &P) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use chrono::{DateTime, TimeZone};
 
     fn audit_with_counts(
         gaps: usize,
@@ -3390,6 +3422,109 @@ mod tests {
             csv_content_matches: ok,
             csv_in_sync: ok,
         }
+    }
+
+    fn local_datetime(
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        minute: u32,
+        second: u32,
+    ) -> anyhow::Result<DateTime<Local>> {
+        Local
+            .with_ymd_and_hms(year, month, day, hour, minute, second)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("invalid local test datetime"))
+    }
+
+    fn assert_string_set_eq(actual: &[&str], expected: &[&str]) {
+        let mut actual = actual.to_vec();
+        let mut expected = expected.to_vec();
+        actual.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+    }
+
+    fn assert_object_keys(value: serde_json::Value, expected: &[&str]) -> anyhow::Result<()> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("expected JSON object"))?;
+        let actual = object.keys().map(String::as_str).collect::<Vec<_>>();
+        assert_string_set_eq(&actual, expected);
+        Ok(())
+    }
+
+    fn sample_summary() -> activity_tracker::ActivitySummary {
+        let row = activity_tracker::SummaryRow {
+            name: "Code".to_string(),
+            seconds: 60.0,
+            percentage: 100.0,
+        };
+        activity_tracker::ActivitySummary {
+            session_count: 1,
+            total_seconds: 60.0,
+            by_activity_type: vec![row.clone()],
+            by_category: vec![row.clone()],
+            by_app: vec![row.clone()],
+            by_domain: vec![row],
+        }
+    }
+
+    fn sample_session() -> anyhow::Result<UsageSession> {
+        Ok(UsageSession {
+            start_time: local_datetime(2026, 6, 3, 8, 0, 0)?,
+            end_time: local_datetime(2026, 6, 3, 8, 1, 0)?,
+            duration_seconds: 60.0,
+            app_name: "Code".to_string(),
+            bundle_id: "com.microsoft.VSCode".to_string(),
+            title: Some("activity_tracker".to_string()),
+            category: "Development".to_string(),
+            url: None,
+            activity_type: activity_tracker::ActivityType::Active,
+        })
+    }
+
+    fn sample_timeline_block() -> anyhow::Result<activity_tracker::TimelineBlock> {
+        Ok(activity_tracker::TimelineBlock {
+            start_time: local_datetime(2026, 6, 3, 8, 0, 0)?,
+            end_time: local_datetime(2026, 6, 3, 8, 1, 0)?,
+            duration_seconds: 60.0,
+            activity_type: activity_tracker::ActivityType::Active,
+            category: "Development".to_string(),
+            app_name: "Code".to_string(),
+            bundle_id: "com.microsoft.VSCode".to_string(),
+            domain: None,
+            title: Some("activity_tracker".to_string()),
+            url: None,
+            session_count: 1,
+        })
+    }
+
+    fn sample_inventory_row() -> anyhow::Result<activity_tracker::ActivityInventoryRow> {
+        Ok(activity_tracker::ActivityInventoryRow {
+            name: "Code".to_string(),
+            secondary: Some("com.microsoft.VSCode".to_string()),
+            seconds: 60.0,
+            percentage: 100.0,
+            session_count: 1,
+            first_seen: Some(local_datetime(2026, 6, 3, 8, 0, 0)?),
+            last_seen: Some(local_datetime(2026, 6, 3, 8, 1, 0)?),
+            latest_title: Some("activity_tracker".to_string()),
+            latest_url: None,
+        })
+    }
+
+    fn sample_inventory() -> anyhow::Result<activity_tracker::ActivityInventory> {
+        let row = sample_inventory_row()?;
+        Ok(activity_tracker::ActivityInventory {
+            session_count: 1,
+            total_seconds: 60.0,
+            by_activity_type: vec![row.clone()],
+            by_category: vec![row.clone()],
+            by_app: vec![row.clone()],
+            by_domain: vec![row],
+        })
     }
 
     #[test]
@@ -3556,6 +3691,174 @@ mod tests {
             }),
             "invalid_service_binary"
         );
+    }
+
+    #[test]
+    fn schema_read_field_constants_match_serialized_payloads() -> anyhow::Result<()> {
+        let now = local_datetime(2026, 6, 3, 8, 0, 0)?;
+        let session = sample_session()?;
+        let summary = sample_summary();
+        let timeline_block = sample_timeline_block()?;
+        let inventory = sample_inventory()?;
+        let inventory_row = sample_inventory_row()?;
+        let audit = audit_with_counts(1, 1, 1, 1, 1, 1, 1);
+
+        assert_object_keys(serde_json::to_value(&summary)?, SUMMARY_FIELDS)?;
+        assert_object_keys(
+            serde_json::to_value(activity_tracker::SummaryRow {
+                name: "Code".to_string(),
+                seconds: 60.0,
+                percentage: 100.0,
+            })?,
+            SUMMARY_ROW_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::to_value(&timeline_block)?,
+            TIMELINE_BLOCK_FIELDS,
+        )?;
+        assert_object_keys(serde_json::to_value(&inventory_row)?, INVENTORY_ROW_FIELDS)?;
+        assert_object_keys(serde_json::to_value(&audit)?, AUDIT_FIELDS)?;
+        assert_object_keys(
+            serde_json::to_value(activity_tracker::AuditQualityRow {
+                name: "Code".to_string(),
+                count: 1,
+            })?,
+            AUDIT_QUALITY_ROW_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::to_value(activity_tracker::AuditQualityIssue {
+                kind: activity_tracker::AuditQualityIssueKind::MissingTitle,
+                start_time: now,
+                end_time: local_datetime(2026, 6, 3, 8, 1, 0)?,
+                duration_seconds: 60.0,
+                app_name: "Code".to_string(),
+                bundle_id: "com.microsoft.VSCode".to_string(),
+                title: None,
+                category: "Development".to_string(),
+                url: None,
+                activity_type: activity_tracker::ActivityType::Active,
+            })?,
+            AUDIT_QUALITY_ISSUE_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::to_value(activity_tracker::AuditGap {
+                start_time: now,
+                end_time: local_datetime(2026, 6, 3, 8, 1, 0)?,
+                duration_seconds: 60.0,
+                previous_app: "Code".to_string(),
+                next_app: "Terminal".to_string(),
+            })?,
+            AUDIT_GAP_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::to_value(activity_tracker::AuditOverlap {
+                start_time: now,
+                end_time: local_datetime(2026, 6, 3, 8, 1, 0)?,
+                duration_seconds: 60.0,
+                first_app: "Code".to_string(),
+                second_app: "Terminal".to_string(),
+            })?,
+            AUDIT_OVERLAP_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::to_value(activity_tracker::AuditInvalidSession {
+                start_time: now,
+                end_time: local_datetime(2026, 6, 3, 8, 1, 0)?,
+                duration_seconds: 60.0,
+                app_name: "Code".to_string(),
+                reason: "bad bounds".to_string(),
+            })?,
+            AUDIT_INVALID_SESSION_FIELDS,
+        )?;
+
+        let mut inventory_payload = serde_json::to_value(inventory)?;
+        if let Some(object) = inventory_payload.as_object_mut() {
+            object.insert("generated_at".to_string(), serde_json::json!(now));
+            object.insert("limit".to_string(), serde_json::json!(12));
+            object.insert(
+                "window".to_string(),
+                serde_json::json!({
+                    "from": null,
+                    "to": null,
+                    "since": null,
+                    "until": null,
+                    "last_minutes": 120,
+                    "start": now,
+                    "end": now,
+                }),
+            );
+        }
+        assert_object_keys(inventory_payload, INVENTORY_FIELDS)?;
+
+        assert_object_keys(
+            serde_json::json!({
+                "app": null,
+                "title": null,
+                "url": null,
+                "text": null,
+                "category": null,
+                "domain": null,
+                "activity_type": null,
+                "limit": 20,
+                "order": "asc",
+            }),
+            QUERY_FILTER_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::json!({
+                "generated_at": now,
+                "from": null,
+                "to": null,
+                "since": null,
+                "until": null,
+                "last_minutes": 120,
+                "window_start": now,
+                "window_end": now,
+                "filters": {},
+                "summary": summary,
+                "timeline": [timeline_block],
+                "sessions": [session],
+                "open_session": null,
+            }),
+            QUERY_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::json!({
+                "date": "2026-06-03",
+                "generated_at": now,
+                "summary": {},
+                "timeline": [],
+                "sessions": [],
+                "active_session": null,
+                "open_session": null,
+                "includes_active_session": false,
+                "paths": {},
+            }),
+            REPORT_FIELDS,
+        )?;
+        assert_object_keys(
+            serde_json::json!({
+                "date": "2026-06-03",
+                "window": null,
+                "generated_at": now,
+                "gap_threshold_seconds": 120.0,
+                "summary": {},
+                "audit": {},
+                "includes_active_session": false,
+                "open_session": null,
+            }),
+            AUDIT_REPORT_FIELDS,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn paths_json_contract_matches_schema_fields() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+
+        assert_object_keys(paths_json_value(&store), PATHS_FIELDS)?;
+        Ok(())
     }
 
     struct FailingProbe;
