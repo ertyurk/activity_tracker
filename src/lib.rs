@@ -391,9 +391,13 @@ pub struct RepairUrlsReport {
 pub struct RepairContextReport {
     pub scanned: usize,
     pub mismatches_found: usize,
+    pub missing_titles_found: usize,
+    pub missing_urls_found: usize,
     pub repaired: usize,
     pub title_repaired: usize,
     pub url_repaired: usize,
+    pub missing_title_repaired: usize,
+    pub missing_url_repaired: usize,
     pub neighbor_repaired: usize,
     pub unique_observation_repaired: usize,
     pub dry_run: bool,
@@ -1065,10 +1069,21 @@ impl LogStore {
 
         for (index, session) in sessions.iter().enumerate() {
             report.scanned += 1;
-            if !browser_context_mismatch(session) {
+            let context_mismatch = browser_context_mismatch(session);
+            let missing_title = browser_context_missing_title(session);
+            let missing_url = browser_missing_url(session);
+            if !context_mismatch && !missing_title && !missing_url {
                 continue;
             }
-            report.mismatches_found += 1;
+            if context_mismatch {
+                report.mismatches_found += 1;
+            }
+            if missing_title {
+                report.missing_titles_found += 1;
+            }
+            if missing_url {
+                report.missing_urls_found += 1;
+            }
             let previous = index.checked_sub(1).and_then(|index| sessions.get(index));
             let next = sessions.get(index + 1);
             let Some(repair) =
@@ -1080,9 +1095,15 @@ impl LogStore {
             report.repaired += 1;
             if repair.title.as_ref() != session.title.as_ref() {
                 report.title_repaired += 1;
+                if missing_title {
+                    report.missing_title_repaired += 1;
+                }
             }
             if repair.url.as_ref() != session.url.as_ref() {
                 report.url_repaired += 1;
+                if missing_url {
+                    report.missing_url_repaired += 1;
+                }
             }
             match repair.source {
                 BrowserContextRepairSource::Neighbor => report.neighbor_repaired += 1,
@@ -2728,6 +2749,16 @@ fn session_missing_title(session: &UsageSession) -> bool {
             .is_none_or(|title| title.trim().is_empty())
 }
 
+fn browser_context_missing_title(session: &UsageSession) -> bool {
+    session.activity_type == ActivityType::Active
+        && is_browser(&session.bundle_id)
+        && !browser_blank_tab(session)
+        && session
+            .title
+            .as_deref()
+            .is_none_or(|title| title.trim().is_empty())
+}
+
 fn browser_blank_tab(session: &UsageSession) -> bool {
     is_browser(&session.bundle_id)
         && (session
@@ -2817,7 +2848,8 @@ fn is_browser_blank_tab_url(url: &str) -> bool {
 }
 
 fn browser_missing_url(session: &UsageSession) -> bool {
-    is_browser(&session.bundle_id)
+    session.activity_type == ActivityType::Active
+        && is_browser(&session.bundle_id)
         && !browser_blank_tab(session)
         && session
             .url
@@ -2844,24 +2876,24 @@ fn repaired_browser_context_for_session(
     next: Option<&UsageSession>,
     url_titles: &HashMap<String, String>,
 ) -> Option<BrowserContextRepair> {
-    if !browser_context_mismatch(session) {
-        return None;
+    if browser_context_mismatch(session) {
+        return repaired_browser_context_from_neighbors(session, previous, next).or_else(|| {
+            session
+                .url
+                .as_deref()
+                .and_then(non_empty_borrowed)
+                .and_then(|url| url_titles.get(url))
+                .and_then(|title| {
+                    browser_context_repair_with_title(
+                        session,
+                        title,
+                        BrowserContextRepairSource::UniqueObservation,
+                    )
+                })
+        });
     }
 
-    repaired_browser_context_from_neighbors(session, previous, next).or_else(|| {
-        session
-            .url
-            .as_deref()
-            .and_then(non_empty_borrowed)
-            .and_then(|url| url_titles.get(url))
-            .and_then(|title| {
-                browser_context_repair_with_title(
-                    session,
-                    title,
-                    BrowserContextRepairSource::UniqueObservation,
-                )
-            })
-    })
+    repaired_missing_browser_context_from_neighbors(session, previous, next)
 }
 
 fn repaired_browser_context_from_neighbors(
@@ -2904,6 +2936,80 @@ fn repaired_browser_context_from_neighbors(
         })
 }
 
+fn repaired_missing_browser_context_from_neighbors(
+    session: &UsageSession,
+    previous: Option<&UsageSession>,
+    next: Option<&UsageSession>,
+) -> Option<BrowserContextRepair> {
+    if session.activity_type != ActivityType::Active
+        || !is_browser(&session.bundle_id)
+        || browser_blank_tab(session)
+        || (!browser_context_missing_title(session) && !browser_missing_url(session))
+    {
+        return None;
+    }
+
+    let title = session.title.as_deref().and_then(non_empty_borrowed);
+    let url = session.url.as_deref().and_then(non_empty_borrowed);
+    if title.is_none() && url.is_none() {
+        return identical_clean_neighbor_context(session, previous, next).and_then(
+            |(neighbor_title, neighbor_url)| {
+                browser_context_repair_with_title_and_url(
+                    session,
+                    neighbor_title,
+                    neighbor_url,
+                    BrowserContextRepairSource::Neighbor,
+                )
+            },
+        );
+    }
+
+    let mut same_title_urls = Vec::new();
+    let mut same_url_titles = Vec::new();
+    for neighbor in [previous, next].into_iter().flatten() {
+        if !same_browser_app_session(session, neighbor) {
+            continue;
+        }
+        let Some((neighbor_title, neighbor_url)) = clean_browser_context(neighbor) else {
+            continue;
+        };
+        if title.is_some_and(|title| title == neighbor_title) {
+            same_title_urls.push(neighbor_url);
+        }
+        if url.is_some_and(|url| url == neighbor_url) {
+            same_url_titles.push(neighbor_title);
+        }
+    }
+
+    unique_str(same_title_urls)
+        .and_then(|url| {
+            browser_context_repair_with_url(session, url, BrowserContextRepairSource::Neighbor)
+        })
+        .or_else(|| {
+            unique_str(same_url_titles).and_then(|title| {
+                browser_context_repair_with_title(
+                    session,
+                    title,
+                    BrowserContextRepairSource::Neighbor,
+                )
+            })
+        })
+}
+
+fn identical_clean_neighbor_context<'a>(
+    session: &UsageSession,
+    previous: Option<&'a UsageSession>,
+    next: Option<&'a UsageSession>,
+) -> Option<(&'a str, &'a str)> {
+    let previous_context = previous
+        .filter(|neighbor| same_browser_app_session(session, neighbor))
+        .and_then(clean_browser_context)?;
+    let next_context = next
+        .filter(|neighbor| same_browser_app_session(session, neighbor))
+        .and_then(clean_browser_context)?;
+    (previous_context == next_context).then_some(previous_context)
+}
+
 fn browser_context_repair_with_url(
     session: &UsageSession,
     url: &str,
@@ -2932,6 +3038,28 @@ fn browser_context_repair_with_title(
     let mut repaired = session.clone();
     repaired.title = Some(title.to_string());
     (!browser_context_mismatch(&repaired)).then_some(BrowserContextRepair {
+        title: repaired.title,
+        url: repaired.url,
+        source,
+    })
+}
+
+fn browser_context_repair_with_title_and_url(
+    session: &UsageSession,
+    title: &str,
+    url: &str,
+    source: BrowserContextRepairSource,
+) -> Option<BrowserContextRepair> {
+    if session.title.as_deref() == Some(title) && session.url.as_deref() == Some(url) {
+        return None;
+    }
+    let mut repaired = session.clone();
+    repaired.title = Some(title.to_string());
+    repaired.url = Some(url.to_string());
+    (!browser_context_mismatch(&repaired)
+        && !browser_context_missing_title(&repaired)
+        && !browser_missing_url(&repaired))
+    .then_some(BrowserContextRepair {
         title: repaired.title,
         url: repaired.url,
         source,
@@ -3652,6 +3780,28 @@ mod tests {
         }
     }
 
+    fn seconds_delta(seconds: i64) -> AnyhowResult<TimeDelta> {
+        TimeDelta::try_seconds(seconds).ok_or_else(|| anyhow::anyhow!("missing delta"))
+    }
+
+    fn browser_session(
+        start: DateTime<Local>,
+        start_offset_seconds: i64,
+        end_offset_seconds: i64,
+        title: Option<&str>,
+        url: Option<&str>,
+    ) -> AnyhowResult<UsageSession> {
+        let mut active_entity = entity();
+        active_entity.title = title.map(str::to_string);
+        active_entity.url = url.map(str::to_string);
+        UsageSession::from_entity(
+            &active_entity,
+            start + seconds_delta(start_offset_seconds)?,
+            start + seconds_delta(end_offset_seconds)?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing browser session"))
+    }
+
     #[test]
     fn active_app_snapshot_parser_keeps_native_title() -> AnyhowResult<()> {
         let snapshot = parse_active_app_snapshot("com.cmuxterm.app\ncmux\ncmux\n")
@@ -4300,6 +4450,100 @@ mod tests {
                 && session.url.as_deref() == Some("https://app.slack.com/client/TF7GEHYHZ/dms")
                 && session.category == "Communication"
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn repair_context_fills_only_neighbor_proven_missing_browser_context() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 9, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let slack_title = "Celal (DM) - Lean Scale - Slack";
+        let slack_url = "https://app.slack.com/client/TF7GEHYHZ/dms";
+        let mail_title = "Inbox (6) - leanscale.com Mail";
+        let mail_url = "https://mail.google.com/mail/u/0/#inbox";
+        let repo_url = "https://github.com/ertyurk/activity_tracker";
+        let missing_title_start = start + seconds_delta(10)?;
+        let missing_url_start = start + seconds_delta(30)?;
+        let missing_both_start = start + seconds_delta(60)?;
+        let conflicting_title_start = start + seconds_delta(90)?;
+        let conflicting_context_start = start + seconds_delta(120)?;
+
+        for session in [
+            browser_session(start, 0, 10, Some(slack_title), Some(slack_url))?,
+            browser_session(start, 10, 20, None, Some(slack_url))?,
+            browser_session(start, 20, 30, Some(slack_title), Some(slack_url))?,
+            browser_session(start, 30, 40, Some(slack_title), None)?,
+            browser_session(start, 40, 50, Some(slack_title), Some(slack_url))?,
+            browser_session(start, 50, 60, Some(mail_title), Some(mail_url))?,
+            browser_session(start, 60, 70, None, None)?,
+            browser_session(start, 70, 80, Some(mail_title), Some(mail_url))?,
+            browser_session(start, 80, 90, Some("Repo A"), Some(repo_url))?,
+            browser_session(start, 90, 100, None, Some(repo_url))?,
+            browser_session(start, 100, 110, Some("Repo B"), Some(repo_url))?,
+            browser_session(start, 110, 120, Some(slack_title), Some(slack_url))?,
+            browser_session(start, 120, 130, None, None)?,
+            browser_session(start, 130, 140, Some(mail_title), Some(mail_url))?,
+        ] {
+            store.append_session(&session)?;
+        }
+
+        let dry_run = store.repair_context(true)?;
+        let report = store.repair_context(false)?;
+        let second_report = store.repair_context(false)?;
+        let sessions = store.load_sessions()?;
+        let audit = audit_sessions(&sessions, 30.0);
+        let repaired_title = sessions
+            .iter()
+            .find(|session| session.start_time == missing_title_start)
+            .ok_or_else(|| anyhow::anyhow!("missing repaired title session"))?;
+        let repaired_url = sessions
+            .iter()
+            .find(|session| session.start_time == missing_url_start)
+            .ok_or_else(|| anyhow::anyhow!("missing repaired url session"))?;
+        let repaired_both = sessions
+            .iter()
+            .find(|session| session.start_time == missing_both_start)
+            .ok_or_else(|| anyhow::anyhow!("missing repaired context session"))?;
+        let unresolved_title = sessions
+            .iter()
+            .find(|session| session.start_time == conflicting_title_start)
+            .ok_or_else(|| anyhow::anyhow!("missing unresolved title session"))?;
+        let unresolved_context = sessions
+            .iter()
+            .find(|session| session.start_time == conflicting_context_start)
+            .ok_or_else(|| anyhow::anyhow!("missing unresolved context session"))?;
+
+        assert_eq!(dry_run.mismatches_found, 0);
+        assert_eq!(dry_run.missing_titles_found, 4);
+        assert_eq!(dry_run.missing_urls_found, 3);
+        assert_eq!(dry_run.repaired, 3);
+        assert_eq!(dry_run.title_repaired, 2);
+        assert_eq!(dry_run.url_repaired, 2);
+        assert_eq!(dry_run.missing_title_repaired, 2);
+        assert_eq!(dry_run.missing_url_repaired, 2);
+        assert_eq!(dry_run.neighbor_repaired, 3);
+        assert_eq!(dry_run.unique_observation_repaired, 0);
+        assert_eq!(report.repaired, 3);
+        assert_eq!(second_report.repaired, 0);
+        assert_eq!(audit.missing_title_count, 2);
+        assert_eq!(audit.browser_missing_url_count, 1);
+        assert_eq!(repaired_title.title.as_deref(), Some(slack_title));
+        assert_eq!(repaired_title.url.as_deref(), Some(slack_url));
+        assert_eq!(repaired_title.category, "Communication");
+        assert_eq!(repaired_url.title.as_deref(), Some(slack_title));
+        assert_eq!(repaired_url.url.as_deref(), Some(slack_url));
+        assert_eq!(repaired_url.category, "Communication");
+        assert_eq!(repaired_both.title.as_deref(), Some(mail_title));
+        assert_eq!(repaired_both.url.as_deref(), Some(mail_url));
+        assert_eq!(repaired_both.category, "Email");
+        assert_eq!(unresolved_title.title, None);
+        assert_eq!(unresolved_title.url.as_deref(), Some(repo_url));
+        assert_eq!(unresolved_context.title, None);
+        assert_eq!(unresolved_context.url, None);
         Ok(())
     }
 

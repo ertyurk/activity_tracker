@@ -20,7 +20,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - Live query commands should include the current open session provisionally; exports should stay completed-session based.
 - Tolerate brief active-app probe misses; do not turn transient macOS/AppleScript failures into fake gaps.
 - Audit should expose suspicious browser title/URL mismatches so old mixed-context rows are visible to agents.
-- Use `repair-context` only for high-confidence browser title/URL mismatch repairs with neighbor or exact-URL evidence.
+- Use `repair-context` only for high-confidence browser title/URL mismatch or missing-context repairs with neighbor or exact-URL evidence.
 - Day queries must handle cross-midnight sessions by overlap, not only start date.
 - Background mode should use `launchd` via `activity_tracker service install`.
 - CLI output should support plain text for humans and `--json` for agents; quality commands should expose both time coverage and context richness.

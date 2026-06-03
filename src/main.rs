@@ -758,9 +758,13 @@ fn repair_context(store: &LogStore, args: RepairContextArgs) -> Result<()> {
     } else {
         println!("scanned: {}", report.scanned);
         println!("mismatches_found: {}", report.mismatches_found);
+        println!("missing_titles_found: {}", report.missing_titles_found);
+        println!("missing_urls_found: {}", report.missing_urls_found);
         println!("repaired: {}", report.repaired);
         println!("title_repaired: {}", report.title_repaired);
         println!("url_repaired: {}", report.url_repaired);
+        println!("missing_title_repaired: {}", report.missing_title_repaired);
+        println!("missing_url_repaired: {}", report.missing_url_repaired);
         println!("neighbor_repaired: {}", report.neighbor_repaired);
         println!(
             "unique_observation_repaired: {}",
