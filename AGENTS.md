@@ -27,6 +27,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - Agent/report readiness and quality gates should be scoped to the requested window; include today-wide audit as separate background context.
 - `query` and `logs` should support narrow filters plus broad `--text` recall across app, bundle, title, URL, domain, category, and activity type.
 - `query` and `logs` should support `--order asc|desc`; agents should use `--order desc --limit N` for latest matching rows.
+- `export --json` should return artifact path, date scope, format, and session count so agents can hand off generated files without scraping text.
 - `inventory --json` should provide windowed app/domain/category/activity-type facets for SwiftUI filter menus and AI planning without raw-log scans.
 - `schema --json` should expose CLI/data-contract capabilities, including agent output and storage verification fields, for SwiftUI and tool harness setup.
 - `now --json` should remain a cheap current-activity poll for SwiftUI/menu-bar clients and require service config validation for `ready`.

@@ -28,7 +28,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 15. Use `cargo run -- logs YYYY-MM-DD --json` for one-day raw sessions.
 16. Narrow `query` or `logs` with `--app`, `--title`, `--url`, `--text`, `--category`, `--domain`, `--activity-type active|idle|untracked`, `--order asc|desc`, and `--limit`; use `--text` for broad recall across app, bundle, title, URL, domain, category, and activity type, and use `--order desc --limit N` for newest matching rows.
 17. Use `cargo run -- inventory --last-minutes N --limit 20 --json` for app/domain/category/activity-type facets before choosing filters or populating UI picker options.
-18. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
+18. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl --json`.
 19. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
 20. After category rule changes, run `cargo run -- reclassify --dry-run --json`, then rerun without `--dry-run`.
 21. After auditing gaps, run `cargo run -- repair-gaps --dry-run --json`, then rerun without `--dry-run` to insert explicit untracked sessions.
@@ -77,6 +77,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Treat uncovered leading/trailing spans inside rolling `agent --last-minutes` windows as coverage gaps so auto reports know when their requested interval is only partially observed.
 - Use windowed `audit` for exact report-window quality checks before calling repairs.
 - Keep `health --json` gated on full storage verification so agents do not call a broken mirror/CSV setup healthy.
+- Keep `export --json` returning artifact path, date scope, format, and session count so agents can hand off generated files without scraping text.
 - Keep `inventory --json` window-aware and backed by the same indexed query window; use it for filter menus instead of scanning raw history in callers.
 - Keep `schema --json` stable enough for SwiftUI/tool harness discovery; update it whenever commands, filters, agent fields, storage verification fields, session fields, defaults, or quality issue kinds change.
 - Keep `now --json` cheap and suitable for frequent SwiftUI/menu-bar polling; `ready` should require service config validation.

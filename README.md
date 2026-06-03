@@ -89,6 +89,7 @@ activity_tracker logs 2026-06-03 --activity-type idle --json
 activity_tracker summary --json
 activity_tracker export --date 2026-06-03 --format csv
 activity_tracker export --date 2026-06-03 --format jsonl
+activity_tracker export --date 2026-06-03 --format jsonl --json
 activity_tracker import-csv ~/Desktop/usage_stats.csv --dry-run --json
 activity_tracker reclassify --dry-run --json
 activity_tracker reclassify --from 2026-06-03 --to 2026-06-03 --dry-run --json
@@ -115,7 +116,7 @@ Windowed summaries and timelines are clipped to the requested day/range/last-min
 `verify --json` runs storage integrity checks: SQLite integrity, SQLite session count, JSONL mirror readability/content sync, and default CSV readability/content sync.
 `service status --json` reports launchd load/running state, PID, program, arguments, and log paths without requiring agents to parse `launchctl` text.
 `service logs --json` reports bounded launchd stdout/stderr tails with paths so agents can inspect service errors without shelling into log files.
-`schema --json` reports the stable CLI/data contract: storage paths, default thresholds, activity types, known categories, session fields, agent fields, storage verification fields, service install/uninstall args and output fields, service install binary requirements, supported window args, filters, read commands, repair commands, service commands, JSON error codes, quality issue kinds, and local-privacy flags.
+`schema --json` reports the stable CLI/data contract: storage paths, default thresholds, activity types, known categories, session fields, agent fields, storage verification fields, export args/output fields, service install/uninstall args and output fields, service install binary requirements, supported window args, filters, read commands, repair commands, service commands, JSON error codes, quality issue kinds, and local-privacy flags.
 When a runtime command invoked with `--json` fails, it emits a JSON error envelope with `ok: false`, `generated_at`, `error.code`, and `error.message` so tool harnesses can branch without scraping stderr.
 `reclassify` recomputes categories from current app and browser-domain rules, useful after improving category mappings.
 `reclassify`, `repair-gaps`, `repair-titles`, `repair-urls`, and `repair-context` accept optional `--from`/`--to`, `--since`/`--until`, or `--last-minutes` windows so an agent can dry-run and apply repairs to the same audited window instead of touching all history.
@@ -124,6 +125,7 @@ When a runtime command invoked with `--json` fails, it emits a JSON error envelo
 `repair-urls` canonicalizes safe URL-only fixes such as known browser blank-tab URLs and missing URLs surrounded by blank-tab samples to `about:newtab`.
 `repair-context` repairs high-confidence browser title/URL mismatches and missing browser context from immediate neighbor evidence or a unique clean exact-URL title observation, converts unrecoverable all-missing browser context rows and short unrecoverable mixed-context or title-missing rows to untracked time, then recomputes category.
 `repair-mirror` rewrites the JSONL mirror and CSV view from SQLite, using SQLite as the source of truth when mirror verification fails.
+`export --json` writes the requested CSV/JSONL export and returns the path, date scope, format, and session count for tool harnesses that need an artifact pointer.
 
 No subcommand defaults to `track`, preserving the original simple run behavior.
 

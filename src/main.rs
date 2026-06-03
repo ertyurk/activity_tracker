@@ -289,6 +289,8 @@ struct ExportArgs {
     format: ExportFormat,
     #[arg(long)]
     output: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -356,6 +358,13 @@ struct RepairContextArgs {
 enum ExportFormat {
     Csv,
     Jsonl,
+}
+
+fn export_format_name(format: ExportFormat) -> &'static str {
+    match format {
+        ExportFormat::Csv => "csv",
+        ExportFormat::Jsonl => "jsonl",
+    }
 }
 
 #[derive(Debug, Args)]
@@ -989,8 +998,20 @@ fn export_sessions(store: &LogStore, args: ExportArgs) -> Result<()> {
         ExportFormat::Jsonl => write_jsonl(&output, &sessions)?,
     }
 
-    println!("{}", output.display());
-    Ok(())
+    if args.json {
+        let value = serde_json::json!({
+            "ok": true,
+            "generated_at": Local::now(),
+            "path": output,
+            "date": args.date,
+            "format": export_format_name(args.format),
+            "session_count": sessions.len(),
+        });
+        print_json(&value)
+    } else {
+        println!("{}", output.display());
+        Ok(())
+    }
 }
 
 fn import_csv(store: &LogStore, args: ImportCsvArgs) -> Result<()> {
@@ -1177,7 +1198,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     ];
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 16,
+            "schema_version": 17,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1236,6 +1257,15 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
             ],
             "window_args": ["--from", "--to", "--since", "--until", "--last-minutes"],
             "filters": ["--app", "--title", "--url", "--text", "--category", "--domain", "--activity-type", "--limit", "--order"],
+            "export_args": ["--date", "--format", "--output", "--json"],
+            "export_fields": [
+                "ok",
+                "generated_at",
+                "path",
+                "date",
+                "format",
+                "session_count",
+            ],
             "service_install_args": ["--bin", "--interval-seconds", "--idle-threshold-seconds", "--no-load", "--json"],
             "service_uninstall_args": ["--json"],
             "service_install_persisted_args": ["--data-dir", "--interval-seconds", "--idle-threshold-seconds"],
@@ -1446,7 +1476,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 16");
+        println!("schema_version: 17");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
@@ -3048,6 +3078,32 @@ mod tests {
         assert!(args_request_json(["activity_tracker", "query", "--json"]));
         assert!(args_request_json(["activity_tracker", "--json", "doctor"]));
         assert!(!args_request_json(["activity_tracker", "query"]));
+    }
+
+    #[test]
+    fn export_accepts_json_flag() {
+        let cli = Cli::try_parse_from([
+            "activity_tracker",
+            "export",
+            "--date",
+            "2026-06-03",
+            "--format",
+            "jsonl",
+            "--json",
+        ]);
+
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                command: Some(Command::Export(ExportArgs {
+                    date: Some(_),
+                    format: ExportFormat::Jsonl,
+                    json: true,
+                    ..
+                })),
+                ..
+            })
+        ));
     }
 
     #[test]
