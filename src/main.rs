@@ -962,7 +962,6 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
 
     if args.json {
         let today_audit = compact_audit(today_audit.clone());
-        let window_audit = compact_audit(window_audit);
         let value = serde_json::json!({
             "generated_at": now,
             "ready": ready,

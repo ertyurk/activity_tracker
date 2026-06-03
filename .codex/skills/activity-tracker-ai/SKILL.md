@@ -12,7 +12,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 ## Query Workflow
 
 1. Run `cargo run -- paths --json` to discover storage paths.
-2. Use `cargo run -- agent --json` as the first AI/reporting hook: readiness, window-scoped quality score/status/repair commands, warnings, window audit, today's audit/quality for background context, bounded summary, most recent timeline context, open checkpoint, and paths.
+2. Use `cargo run -- agent --json` as the first AI/reporting hook: readiness, window-scoped quality score/status/repair commands, warnings, window audit with bounded quality issue samples, today's audit/quality for background context, bounded summary, most recent timeline context, open checkpoint, and paths.
 3. Use `cargo run -- agent --last-minutes N --json` for rolling auto-report windows, or `cargo run -- agent YYYY-MM-DD --json` for compact day context.
 4. Add `--include-sessions` to `agent` only when raw sessions are necessary.
 5. Use `cargo run -- health --json` before reports when you need the full launchd/storage health payload.
