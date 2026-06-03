@@ -24,7 +24,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 11. Omit window args on `query` for all-history search.
 12. Use `cargo run -- day YYYY-MM-DD --json` for daily summaries.
 13. Use `cargo run -- logs YYYY-MM-DD --json` for one-day raw sessions.
-14. Narrow `query` or `logs` with `--app`, `--title`, `--category`, `--domain`, `--activity-type active|idle|untracked`, and `--limit`.
+14. Narrow `query` or `logs` with `--app`, `--title`, `--url`, `--text`, `--category`, `--domain`, `--activity-type active|idle|untracked`, and `--limit`; use `--text` for broad recall across app, bundle, title, URL, domain, category, and activity type.
 15. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
 16. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
 17. After category rule changes, run `cargo run -- reclassify --dry-run --json`, then rerun without `--dry-run`.
@@ -44,6 +44,8 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Background status: `cargo run -- service status --json`
 - Background remove: `cargo run -- service uninstall`
 - CSV import: `cargo run -- import-csv ~/Desktop/usage_stats.csv --json`
+- Broad search: `cargo run -- query --text "driverry devops" --json`
+- URL search: `cargo run -- logs 2026-06-03 --url pull/123 --json`
 - Scoped reclassify: `cargo run -- reclassify --from 2026-06-03 --to 2026-06-03 --dry-run --json`
 - Title repair: `cargo run -- repair-titles --dry-run --json`
 - URL repair: `cargo run -- repair-urls --dry-run --json`

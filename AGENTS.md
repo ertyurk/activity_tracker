@@ -21,6 +21,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - Keep an `open_session` heartbeat checkpoint so service restarts recover the current span instead of dropping it.
 - Live query commands should include the current open session provisionally; exports should stay completed-session based.
 - Agent/report readiness and quality gates should be scoped to the requested window; include today-wide audit as separate background context.
+- `query` and `logs` should support narrow filters plus broad `--text` recall across app, bundle, title, URL, domain, category, and activity type.
 - Keep window-scoped quality issue samples in `agent --json`; compact today-wide audit samples to keep payload bounded.
 - Keep `agent` repair commands scoped to the same audited window, and keep `reclassify`/repair commands window-aware so agents do not mutate all history for a narrow report.
 - Use `agent.repair_plan.actionable_commands` for automated fixes; `agent.quality.repair_commands` are candidates and may explain non-repairable quality warnings.
@@ -61,6 +62,8 @@ cargo run -- query --category Development --limit 50 --json
 cargo run -- audit 2026-06-03 --json
 cargo run -- logs 2026-06-03 --domain github --json
 cargo run -- logs 2026-06-03 --title project --json
+cargo run -- logs 2026-06-03 --url pull/123 --json
+cargo run -- query --text "driverry devops" --json
 cargo run -- logs 2026-06-03 --activity-type idle --json
 cargo run -- export --date 2026-06-03 --format csv
 cargo run -- import-csv ~/Desktop/usage_stats.csv --dry-run --json

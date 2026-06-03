@@ -11,10 +11,10 @@ use activity_tracker::{
     DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS, DEFAULT_IDLE_THRESHOLD_SECONDS,
     DEFAULT_INTERVAL_SECONDS, DEFAULT_PROBE_MISS_TOLERANCE, DEFAULT_RECENT_CHECKPOINT_SECONDS,
     LogStore, MacOsProbe, ProbeMissStabilizer, QueryTimeWindow, QueryTimeWindowInput, Result,
-    TrackerError, TrackerState, UsageSession, audit_sessions, day_bounds, filter_sessions,
-    format_seconds, install_launch_agent, legacy_data_dir, legacy_sessions_path, parse_date,
-    query_time_window, service_status, service_status_report, summarize_all, summarize_day,
-    timeline_blocks, uninstall_launch_agent,
+    SessionFilterInput, TrackerError, TrackerState, UsageSession, audit_sessions, day_bounds,
+    filter_sessions, format_seconds, install_launch_agent, legacy_data_dir, legacy_sessions_path,
+    parse_date, query_time_window, service_status, service_status_report, summarize_all,
+    summarize_day, timeline_blocks, uninstall_launch_agent,
 };
 use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -131,6 +131,10 @@ struct QueryArgs {
     #[arg(long)]
     title: Option<String>,
     #[arg(long)]
+    url: Option<String>,
+    #[arg(long)]
+    text: Option<String>,
+    #[arg(long)]
     category: Option<String>,
     #[arg(long)]
     domain: Option<String>,
@@ -163,6 +167,10 @@ struct LogsArgs {
     app: Option<String>,
     #[arg(long)]
     title: Option<String>,
+    #[arg(long)]
+    url: Option<String>,
+    #[arg(long)]
+    text: Option<String>,
     #[arg(long)]
     category: Option<String>,
     #[arg(long)]
@@ -547,12 +555,16 @@ fn print_query(store: &LogStore, args: QueryArgs) -> Result<()> {
     )?;
     let sessions = filter_sessions(
         sessions,
-        args.app.as_deref(),
-        args.title.as_deref(),
-        args.category.as_deref(),
-        args.domain.as_deref(),
-        args.activity_type.as_deref(),
-        args.limit,
+        SessionFilterInput {
+            app: args.app.as_deref(),
+            title: args.title.as_deref(),
+            url: args.url.as_deref(),
+            text: args.text.as_deref(),
+            category: args.category.as_deref(),
+            domain: args.domain.as_deref(),
+            activity_type: args.activity_type.as_deref(),
+            limit: args.limit,
+        },
     );
     let summary = summarize_all(&sessions);
     let timeline = timeline_blocks(&sessions);
@@ -570,6 +582,8 @@ fn print_query(store: &LogStore, args: QueryArgs) -> Result<()> {
             "filters": {
                 "app": args.app.as_deref(),
                 "title": args.title.as_deref(),
+                "url": args.url.as_deref(),
+                "text": args.text.as_deref(),
                 "category": args.category.as_deref(),
                 "domain": args.domain.as_deref(),
                 "activity_type": args.activity_type.as_deref(),
@@ -594,12 +608,16 @@ fn print_logs(store: &LogStore, args: LogsArgs) -> Result<()> {
         store.sessions_for_day_with_open(date, Local::now(), DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
     let sessions = filter_sessions(
         sessions,
-        args.app.as_deref(),
-        args.title.as_deref(),
-        args.category.as_deref(),
-        args.domain.as_deref(),
-        args.activity_type.as_deref(),
-        args.limit,
+        SessionFilterInput {
+            app: args.app.as_deref(),
+            title: args.title.as_deref(),
+            url: args.url.as_deref(),
+            text: args.text.as_deref(),
+            category: args.category.as_deref(),
+            domain: args.domain.as_deref(),
+            activity_type: args.activity_type.as_deref(),
+            limit: args.limit,
+        },
     );
 
     if args.json {

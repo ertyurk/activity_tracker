@@ -230,6 +230,18 @@ pub struct QueryTimeWindowInput<'a> {
     pub last_minutes: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SessionFilterInput<'a> {
+    pub app: Option<&'a str>,
+    pub title: Option<&'a str>,
+    pub url: Option<&'a str>,
+    pub text: Option<&'a str>,
+    pub category: Option<&'a str>,
+    pub domain: Option<&'a str>,
+    pub activity_type: Option<&'a str>,
+    pub limit: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct QueryTimeWindow {
     pub from: Option<NaiveDate>,
@@ -1831,18 +1843,15 @@ pub fn timeline_blocks(sessions: &[UsageSession]) -> Vec<TimelineBlock> {
 #[must_use]
 pub fn filter_sessions(
     sessions: Vec<UsageSession>,
-    app: Option<&str>,
-    title: Option<&str>,
-    category: Option<&str>,
-    domain: Option<&str>,
-    activity_type: Option<&str>,
-    limit: Option<usize>,
+    input: SessionFilterInput<'_>,
 ) -> Vec<UsageSession> {
-    let app = app.map(str::to_lowercase);
-    let title = title.map(str::to_lowercase);
-    let category = category.map(str::to_lowercase);
-    let domain = domain.map(str::to_lowercase);
-    let activity_type = activity_type.map(str::to_lowercase);
+    let app = input.app.map(str::to_lowercase);
+    let title = input.title.map(str::to_lowercase);
+    let url = input.url.map(str::to_lowercase);
+    let text = input.text.map(str::to_lowercase);
+    let category = input.category.map(str::to_lowercase);
+    let domain = input.domain.map(str::to_lowercase);
+    let activity_type = input.activity_type.map(str::to_lowercase);
 
     let mut filtered: Vec<_> = sessions
         .into_iter()
@@ -1859,6 +1868,18 @@ pub fn filter_sessions(
                     .as_deref()
                     .is_some_and(|title| title.to_lowercase().contains(needle))
             })
+        })
+        .filter(|session| {
+            url.as_ref().is_none_or(|needle| {
+                session
+                    .url
+                    .as_deref()
+                    .is_some_and(|url| url.to_lowercase().contains(needle))
+            })
+        })
+        .filter(|session| {
+            text.as_ref()
+                .is_none_or(|needle| session_matches_text(session, needle))
         })
         .filter(|session| {
             category
@@ -1882,10 +1903,30 @@ pub fn filter_sessions(
         .collect();
 
     filtered.sort_by_key(|session| session.start_time);
-    if let Some(limit) = limit {
+    if let Some(limit) = input.limit {
         filtered.truncate(limit);
     }
     filtered
+}
+
+fn session_matches_text(session: &UsageSession, needle: &str) -> bool {
+    session.app_name.to_lowercase().contains(needle)
+        || session.bundle_id.to_lowercase().contains(needle)
+        || session.category.to_lowercase().contains(needle)
+        || session.activity_type.as_str().contains(needle)
+        || session
+            .title
+            .as_deref()
+            .is_some_and(|title| title.to_lowercase().contains(needle))
+        || session
+            .url
+            .as_deref()
+            .is_some_and(|url| url.to_lowercase().contains(needle))
+        || session
+            .url
+            .as_deref()
+            .and_then(domain_from_url)
+            .is_some_and(|host| host.contains(needle))
 }
 
 #[must_use]
@@ -5316,10 +5357,65 @@ mod tests {
         let session = UsageSession::from_entity(&entity(), start, end)
             .ok_or_else(|| anyhow::anyhow!("missing session"))?;
 
-        let filtered =
-            filter_sessions(vec![session], None, Some("project"), None, None, None, None);
+        let filtered = filter_sessions(
+            vec![session],
+            SessionFilterInput {
+                title: Some("project"),
+                ..SessionFilterInput::default()
+            },
+        );
 
         assert_eq!(filtered.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn filters_sessions_by_url_and_text() -> AnyhowResult<()> {
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let mut github = browser_session(
+            start,
+            0,
+            60,
+            Some("Pull Request"),
+            Some("https://github.com/ertyurk/activity_tracker/pull/1"),
+        )?;
+        github.category = "Development".to_string();
+        let slack = browser_session(
+            start,
+            60,
+            120,
+            Some("Lean Scale - Slack"),
+            Some("https://app.slack.com/client/example"),
+        )?;
+
+        let by_url = filter_sessions(
+            vec![github.clone(), slack.clone()],
+            SessionFilterInput {
+                url: Some("activity_tracker/pull"),
+                ..SessionFilterInput::default()
+            },
+        );
+        let by_text = filter_sessions(
+            vec![github, slack],
+            SessionFilterInput {
+                text: Some("development"),
+                ..SessionFilterInput::default()
+            },
+        );
+
+        assert_eq!(by_url.len(), 1);
+        assert_eq!(
+            by_url.first().and_then(|session| session.url.as_deref()),
+            Some("https://github.com/ertyurk/activity_tracker/pull/1")
+        );
+        assert_eq!(by_text.len(), 1);
+        assert_eq!(
+            by_text.first().and_then(|session| session.title.as_deref()),
+            Some("Pull Request")
+        );
         Ok(())
     }
 

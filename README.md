@@ -69,6 +69,8 @@ activity_tracker audit 2026-06-03 --json
 activity_tracker logs 2026-06-03 --domain github --json
 activity_tracker logs 2026-06-03 --app "Code" --json
 activity_tracker logs 2026-06-03 --title "project" --json
+activity_tracker logs 2026-06-03 --url "pull/123" --json
+activity_tracker query --text "driverry devops" --json
 activity_tracker logs 2026-06-03 --activity-type idle --json
 activity_tracker summary --json
 activity_tracker export --date 2026-06-03 --format csv
@@ -84,8 +86,8 @@ activity_tracker repair-context --last-minutes 120 --dry-run --json
 ```
 
 `agent --json` is the preferred first call for internal AI/reporting tools: it returns service readiness, a window-scoped `quality` gate with score/status/scoped candidate repair commands, a dry-run `repair_plan` with actionable commands and repairable counts, freshness, warnings, window audit with bounded quality issue samples, today's audit/quality for background context, bounded summary/timeline context, open checkpoint, and paths. It defaults to the last 120 minutes, top 12 summary rows, and the 20 most recent timeline blocks; pass a date for one day, tune `--summary-limit`/`--timeline-limit`, or add `--include-sessions` when a tool needs raw sessions.
-`report --json` is the preferred full daily payload for AI agents: it includes the day summary, raw sessions, current open-session checkpoint, provisional active session, and storage paths. `query --json` is the preferred cross-day/all-history search payload: it accepts optional `--from`/`--to` local dates, precise RFC3339 `--since`/`--until` timestamps, or `--last-minutes` for auto-report windows, plus the same app/title/category/domain/activity-type filters as `logs`, and returns summary, compact timeline, raw sessions, filters, and open checkpoint.
-`day`, `logs`, `query`, `summary`, and `report` include the active open session when it overlaps the query; exports stay based on completed sessions.
+`report --json` is the preferred full daily payload for AI agents: it includes the day summary, raw sessions, current open-session checkpoint, provisional active session, and storage paths. `query --json` is the preferred cross-day/all-history search payload: it accepts optional `--from`/`--to` local dates, precise RFC3339 `--since`/`--until` timestamps, or `--last-minutes` for auto-report windows, plus the same app/title/url/text/category/domain/activity-type filters as `logs`, and returns summary, compact timeline, raw sessions, filters, and open checkpoint.
+`day`, `logs`, `query`, `summary`, and `report` include the active open session when it overlaps the query; exports stay based on completed sessions. `--text` searches across app, bundle, title, URL, domain, category, and activity type when agents need a broad recall query.
 `timeline --json` returns compact ordered blocks grouped by app/domain/category so agents can write reports without reading every raw session.
 `audit --json` reports log quality for a day: gaps above a configurable threshold, overlaps, invalid rows, missing titles, browser sessions missing URLs, browser blank tabs, suspicious browser title/URL mismatches, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, bounded quality issue samples, and current open-session state. Known browser blank tabs are canonicalized as `about:newtab` for new sessions.
 `health --json` is the cheap service substrate check for agents: launchd state, storage freshness, latest observed activity age, open checkpoint, paths, and today's audit/quality counts and breakdowns.
