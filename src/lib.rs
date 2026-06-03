@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::env;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -346,6 +346,8 @@ pub struct RepairGapsReport {
 pub struct RepairTitlesReport {
     pub scanned: usize,
     pub repaired: usize,
+    pub native_repaired: usize,
+    pub browser_repaired: usize,
     pub dry_run: bool,
 }
 
@@ -897,6 +899,7 @@ impl LogStore {
     pub fn repair_titles(&self, dry_run: bool) -> Result<RepairTitlesReport> {
         self.ensure_dirs()?;
         let sessions = self.load_sessions_from_db()?;
+        let browser_titles = unique_browser_titles_by_url(&sessions);
         let mut report = RepairTitlesReport {
             dry_run,
             ..RepairTitlesReport::default()
@@ -904,13 +907,17 @@ impl LogStore {
 
         for session in sessions {
             report.scanned += 1;
-            let Some(title) = repaired_title_for_session(&session) else {
+            let Some(repair) = repaired_title_for_session(&session, &browser_titles) else {
                 continue;
             };
 
             report.repaired += 1;
+            match repair.source {
+                TitleRepairSource::NativeApp => report.native_repaired += 1,
+                TitleRepairSource::UniqueBrowserUrl => report.browser_repaired += 1,
+            }
             if !dry_run {
-                self.update_session_title(&session, &title)?;
+                self.update_session_title(&session, &repair.title)?;
             }
         }
 
@@ -2348,25 +2355,92 @@ fn browser_missing_url(session: &UsageSession) -> bool {
             .is_none_or(|url| url.trim().is_empty())
 }
 
-fn repaired_title_for_session(session: &UsageSession) -> Option<String> {
-    if session.activity_type != ActivityType::Active || is_browser(&session.bundle_id) {
+#[derive(Debug, Clone)]
+struct TitleRepair {
+    title: String,
+    source: TitleRepairSource,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TitleRepairSource {
+    NativeApp,
+    UniqueBrowserUrl,
+}
+
+fn repaired_title_for_session(
+    session: &UsageSession,
+    browser_titles: &HashMap<String, String>,
+) -> Option<TitleRepair> {
+    if session.activity_type != ActivityType::Active {
         return None;
     }
 
+    if is_browser(&session.bundle_id) {
+        if !session_missing_title(session) {
+            return None;
+        }
+        let url = session.url.as_deref().and_then(non_empty_borrowed)?;
+        let title = browser_titles.get(url)?;
+        return Some(TitleRepair {
+            title: title.clone(),
+            source: TitleRepairSource::UniqueBrowserUrl,
+        });
+    }
+
     let title = non_empty_string(session.app_name.clone())?;
-    if session.bundle_id == "com.cmuxterm.app" {
-        return session
+    let should_repair = if session.bundle_id == "com.cmuxterm.app" {
+        session
             .title
             .as_deref()
             .is_none_or(|current| current.trim() != title)
-            .then_some(title);
+    } else {
+        session_missing_title(session)
+    };
+    should_repair.then_some(TitleRepair {
+        title,
+        source: TitleRepairSource::NativeApp,
+    })
+}
+
+fn unique_browser_titles_by_url(sessions: &[UsageSession]) -> HashMap<String, String> {
+    let mut observed = HashMap::<String, Option<String>>::new();
+    for session in sessions {
+        if session.activity_type != ActivityType::Active || !is_browser(&session.bundle_id) {
+            continue;
+        }
+        let Some(url) = session
+            .url
+            .as_deref()
+            .and_then(non_empty_borrowed)
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let Some(title) = session
+            .title
+            .as_deref()
+            .and_then(non_empty_borrowed)
+            .map(str::to_string)
+        else {
+            continue;
+        };
+
+        match observed.entry(url) {
+            Entry::Vacant(entry) => {
+                entry.insert(Some(title));
+            }
+            Entry::Occupied(mut entry) => {
+                if entry.get().as_deref() != Some(title.as_str()) {
+                    entry.insert(None);
+                }
+            }
+        }
     }
 
-    session
-        .title
-        .as_deref()
-        .is_none_or(|current| current.trim().is_empty())
-        .then_some(title)
+    observed
+        .into_iter()
+        .filter_map(|(url, title)| title.map(|title| (url, title)))
+        .collect()
 }
 
 fn seconds_between(start_time: DateTime<Local>, end_time: DateTime<Local>) -> Option<f64> {
@@ -3365,7 +3439,11 @@ mod tests {
         let sessions = store.load_sessions()?;
 
         assert_eq!(dry_run.repaired, 1);
+        assert_eq!(dry_run.native_repaired, 1);
+        assert_eq!(dry_run.browser_repaired, 0);
         assert_eq!(report.repaired, 1);
+        assert_eq!(report.native_repaired, 1);
+        assert_eq!(report.browser_repaired, 0);
         assert!(
             sessions
                 .iter()
@@ -3377,6 +3455,76 @@ mod tests {
                 .iter()
                 .any(|session| session.bundle_id == "com.google.Chrome" && session.title.is_none())
         );
+        Ok(())
+    }
+
+    #[test]
+    fn repair_titles_uses_unique_browser_url_title_only() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 9, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let mut observed = UsageSession::from_entity(
+            &entity(),
+            start,
+            start + TimeDelta::try_seconds(60).ok_or_else(|| anyhow::anyhow!("missing delta"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing observed"))?;
+        observed.url = Some("https://example.com/stable".to_string());
+        observed.title = Some("Stable Title".to_string());
+        let mut missing = observed.clone();
+        missing.start_time =
+            start + TimeDelta::try_seconds(60).ok_or_else(|| anyhow::anyhow!("missing delta"))?;
+        missing.end_time =
+            start + TimeDelta::try_seconds(120).ok_or_else(|| anyhow::anyhow!("missing delta"))?;
+        missing.duration_seconds = 60.0;
+        missing.title = None;
+
+        let mut ambiguous_first = observed.clone();
+        ambiguous_first.start_time =
+            start + TimeDelta::try_seconds(120).ok_or_else(|| anyhow::anyhow!("missing delta"))?;
+        ambiguous_first.end_time =
+            start + TimeDelta::try_seconds(180).ok_or_else(|| anyhow::anyhow!("missing delta"))?;
+        ambiguous_first.url = Some("https://example.com/ambiguous".to_string());
+        ambiguous_first.title = Some("First Title".to_string());
+        let mut ambiguous_second = ambiguous_first.clone();
+        ambiguous_second.start_time =
+            start + TimeDelta::try_seconds(180).ok_or_else(|| anyhow::anyhow!("missing delta"))?;
+        ambiguous_second.end_time =
+            start + TimeDelta::try_seconds(240).ok_or_else(|| anyhow::anyhow!("missing delta"))?;
+        ambiguous_second.title = Some("Second Title".to_string());
+        let mut ambiguous_missing = ambiguous_first.clone();
+        ambiguous_missing.start_time =
+            start + TimeDelta::try_seconds(240).ok_or_else(|| anyhow::anyhow!("missing delta"))?;
+        ambiguous_missing.end_time =
+            start + TimeDelta::try_seconds(300).ok_or_else(|| anyhow::anyhow!("missing delta"))?;
+        ambiguous_missing.title = None;
+
+        store.append_session(&observed)?;
+        store.append_session(&missing)?;
+        store.append_session(&ambiguous_first)?;
+        store.append_session(&ambiguous_second)?;
+        store.append_session(&ambiguous_missing)?;
+        let dry_run = store.repair_titles(true)?;
+        let report = store.repair_titles(false)?;
+        let second_report = store.repair_titles(false)?;
+        let sessions = store.load_sessions()?;
+
+        assert_eq!(dry_run.repaired, 1);
+        assert_eq!(dry_run.browser_repaired, 1);
+        assert_eq!(dry_run.native_repaired, 0);
+        assert_eq!(report.repaired, 1);
+        assert_eq!(report.browser_repaired, 1);
+        assert_eq!(report.native_repaired, 0);
+        assert_eq!(second_report.repaired, 0);
+        assert!(sessions.iter().any(|session| session.url.as_deref()
+            == Some("https://example.com/stable")
+            && session.title.as_deref() == Some("Stable Title")));
+        assert!(sessions.iter().any(|session| session.url.as_deref()
+            == Some("https://example.com/ambiguous")
+            && session.title.is_none()));
         Ok(())
     }
 

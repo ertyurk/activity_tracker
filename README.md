@@ -86,7 +86,7 @@ activity_tracker repair-titles --dry-run --json
 `service status --json` reports launchd load/running state and PID without requiring agents to parse `launchctl` text.
 `reclassify` recomputes categories from current app and browser-domain rules, useful after improving category mappings.
 `repair-gaps` converts audited gaps in completed logs into explicit `activity_type: "untracked"` sessions so missing time stays visible instead of disappearing from totals.
-`repair-titles` backfills native-app title gaps with the app name when macOS exposes only app-level context; browser title gaps stay untouched because they are actionable browser-probe misses.
+`repair-titles` backfills native-app title gaps with the app name when macOS exposes only app-level context, and repairs browser titles only when the exact URL has one unique observed title elsewhere in the log.
 
 No subcommand defaults to `track`, preserving the original simple run behavior.
 

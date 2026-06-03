@@ -696,6 +696,8 @@ fn repair_titles(store: &LogStore, args: RepairTitlesArgs) -> Result<()> {
     } else {
         println!("scanned: {}", report.scanned);
         println!("repaired: {}", report.repaired);
+        println!("native_repaired: {}", report.native_repaired);
+        println!("browser_repaired: {}", report.browser_repaired);
         println!("dry_run: {}", yes_no(report.dry_run));
         Ok(())
     }

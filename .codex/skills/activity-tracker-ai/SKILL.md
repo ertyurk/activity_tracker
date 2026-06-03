@@ -29,7 +29,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 16. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
 17. After category rule changes, run `cargo run -- reclassify --dry-run --json`, then rerun without `--dry-run`.
 18. After auditing gaps, run `cargo run -- repair-gaps --dry-run --json`, then rerun without `--dry-run` to insert explicit untracked sessions.
-19. After improving native title fallback, run `cargo run -- repair-titles --dry-run --json`, then rerun without `--dry-run` to backfill app-level native titles while leaving browser title misses actionable.
+19. After improving title capture, run `cargo run -- repair-titles --dry-run --json`, then rerun without `--dry-run` to backfill native app titles and browser titles whose exact URL has one unique observed title.
 
 ## Operations
 
@@ -41,7 +41,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Background status: `cargo run -- service status --json`
 - Background remove: `cargo run -- service uninstall`
 - CSV import: `cargo run -- import-csv ~/Desktop/usage_stats.csv --json`
-- Native title repair: `cargo run -- repair-titles --dry-run --json`
+- Title repair: `cargo run -- repair-titles --dry-run --json`
 
 ## Implementation Rules
 
@@ -53,7 +53,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Use app identity plus browser URL domains for categories; reclassify stored sessions when mappings change.
 - For browsers, collect active tab title and URL from the same AppleScript sample so rows do not mix different tab states.
 - For native apps, collect app identity and title fallback from the same foreground probe sample: window title first, then app title/name when macOS exposes no window.
-- Use `repair-titles` to backfill native app title gaps after title fallback changes; do not mask browser title misses with synthetic titles.
+- Use `repair-titles` to backfill native app title gaps and exact-URL browser title gaps after title capture changes; do not mask browser misses with synthetic titles.
 - Preserve current session through short active-app probe misses; only create gaps after repeated misses.
 - Canonicalize known browser blank tabs as `about:newtab` and keep them separate from actionable missing-URL audit rows.
 - Record idle as `activity_type: "idle"` with `bundle_id: "local.activity_tracker.idle"` once HID idle time crosses threshold.
