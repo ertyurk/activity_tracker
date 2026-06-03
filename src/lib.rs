@@ -342,6 +342,13 @@ pub struct RepairGapsReport {
     pub dry_run: bool,
 }
 
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct RepairTitlesReport {
+    pub scanned: usize,
+    pub repaired: usize,
+    pub dry_run: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionCheckpoint {
     pub start_time: DateTime<Local>,
@@ -887,6 +894,34 @@ impl LogStore {
         Ok(report)
     }
 
+    pub fn repair_titles(&self, dry_run: bool) -> Result<RepairTitlesReport> {
+        self.ensure_dirs()?;
+        let sessions = self.load_sessions_from_db()?;
+        let mut report = RepairTitlesReport {
+            dry_run,
+            ..RepairTitlesReport::default()
+        };
+
+        for session in sessions {
+            report.scanned += 1;
+            let Some(title) = repaired_title_for_session(&session) else {
+                continue;
+            };
+
+            report.repaired += 1;
+            if !dry_run {
+                self.update_session_title(&session, &title)?;
+            }
+        }
+
+        if !dry_run && report.repaired > 0 {
+            self.rewrite_jsonl_mirror_from_db()?;
+            self.refresh_default_csv()?;
+        }
+
+        Ok(report)
+    }
+
     pub fn checkpoint_session(
         &self,
         entity: &ActiveEntity,
@@ -1163,6 +1198,32 @@ impl LogStore {
                AND activity_type = ?8",
             params![
                 category,
+                session.start_time.to_rfc3339(),
+                session.end_time.to_rfc3339(),
+                &session.app_name,
+                &session.bundle_id,
+                &session.title,
+                &session.url,
+                session.activity_type.to_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn update_session_title(&self, session: &UsageSession, title: &str) -> Result<()> {
+        let conn = Connection::open(self.db_path())?;
+        conn.execute(
+            "UPDATE sessions
+             SET title = ?1
+             WHERE start_time = ?2
+               AND end_time = ?3
+               AND app_name = ?4
+               AND bundle_id = ?5
+               AND title IS ?6
+               AND url IS ?7
+               AND activity_type = ?8",
+            params![
+                title,
                 session.start_time.to_rfc3339(),
                 session.end_time.to_rfc3339(),
                 &session.app_name,
@@ -1752,20 +1813,30 @@ pub struct MacOsProbe;
 
 pub const BROWSER_NEW_TAB_URL: &str = "about:newtab";
 
+#[derive(Debug, Clone)]
+struct ActiveAppSnapshot {
+    bundle_id: String,
+    name: String,
+    title: Option<String>,
+}
+
 impl ActivityProbe for MacOsProbe {
     fn active_entity(&self) -> Result<Option<ActiveEntity>> {
-        let Some((bundle_id, name)) = active_app_info()? else {
+        let Some(active_app) = active_app_snapshot()? else {
             return Ok(None);
         };
+        let ActiveAppSnapshot {
+            bundle_id,
+            name,
+            title: native_title,
+        } = active_app;
         let (title, url) = if is_browser(&bundle_id) {
             let title = browser_tab_title(&bundle_id);
             let url = normalize_browser_tab_url(title.as_deref(), browser_tab_url(&bundle_id));
             (title, url)
         } else {
             (
-                active_window_title()
-                    .or_else(active_app_title)
-                    .or_else(|| non_empty_string(name.clone())),
+                native_title.or_else(|| non_empty_string(name.clone())),
                 None,
             )
         };
@@ -1827,37 +1898,81 @@ pub fn run_osascript(script: &str) -> Result<String> {
 }
 
 pub fn active_app_info() -> Result<Option<(String, String)>> {
+    Ok(active_app_snapshot()?.map(|snapshot| (snapshot.bundle_id, snapshot.name)))
+}
+
+fn active_app_snapshot() -> Result<Option<ActiveAppSnapshot>> {
     let script = r#"tell application "System Events"
 set frontApp to first application process whose frontmost is true
 set appName to name of frontApp
 set bundleId to bundle identifier of frontApp
-return bundleId & linefeed & appName
+set contextTitle to ""
+try
+  set frontWindow to window 1 of frontApp
+  try
+    set windowName to name of frontWindow
+    if windowName is not missing value and windowName is not "" then set contextTitle to windowName
+  end try
+  if contextTitle is "" then
+    try
+      set axTitle to value of attribute "AXTitle" of frontWindow
+      if axTitle is not missing value and axTitle is not "" then set contextTitle to axTitle
+    end try
+  end if
+  if contextTitle is "" then
+    try
+      set axDocument to value of attribute "AXDocument" of frontWindow
+      if axDocument is not missing value and axDocument is not "" then set contextTitle to axDocument
+    end try
+  end if
+end try
+if contextTitle is "" then
+  try
+    set processTitle to title of frontApp
+    if processTitle is not missing value and processTitle is not "" then set contextTitle to processTitle
+  end try
+end if
+if contextTitle is "" then
+  try
+    set displayName to displayed name of frontApp
+    if displayName is not missing value and displayName is not "" then set contextTitle to displayName
+  end try
+end if
+if contextTitle is "" then set contextTitle to appName
+return bundleId & linefeed & appName & linefeed & contextTitle
 end tell"#;
 
     match run_osascript(script) {
-        Ok(output) => {
-            let mut lines = output.lines();
-            let Some(bundle_id) = lines
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            else {
-                return Ok(None);
-            };
-            let Some(name) = lines
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            else {
-                return Ok(None);
-            };
-            Ok(Some((bundle_id.to_string(), name.to_string())))
-        }
+        Ok(output) => Ok(parse_active_app_snapshot(&output)),
         Err(error) => {
             tracing::warn!(error = %error, "active app probe failed");
             Ok(None)
         }
     }
+}
+
+fn parse_active_app_snapshot(output: &str) -> Option<ActiveAppSnapshot> {
+    let mut lines = output.lines();
+    let bundle_id = lines
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let name = lines
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let title = lines.next().map(str::trim).and_then(|value| {
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    });
+    Some(ActiveAppSnapshot {
+        bundle_id: bundle_id.to_string(),
+        name: name.to_string(),
+        title,
+    })
 }
 
 pub fn browser_tab_url(bundle_id: &str) -> Option<String> {
@@ -1935,33 +2050,6 @@ end tell"#;
         Ok(title) => non_empty_string(title),
         Err(error) => {
             tracing::debug!(error = %error, "window title probe failed");
-            None
-        }
-    }
-}
-
-pub fn active_app_title() -> Option<String> {
-    let script = r#"tell application "System Events"
-set frontApp to first application process whose frontmost is true
-try
-  set processTitle to title of frontApp
-  if processTitle is not missing value and processTitle is not "" then return processTitle
-end try
-try
-  set displayName to displayed name of frontApp
-  if displayName is not missing value and displayName is not "" then return displayName
-end try
-try
-  set appName to name of frontApp
-  if appName is not missing value and appName is not "" then return appName
-end try
-return ""
-end tell"#;
-
-    match run_osascript(script) {
-        Ok(title) => non_empty_string(title),
-        Err(error) => {
-            tracing::debug!(error = %error, "app title probe failed");
             None
         }
     }
@@ -2232,6 +2320,27 @@ fn browser_missing_url(session: &UsageSession) -> bool {
             .url
             .as_deref()
             .is_none_or(|url| url.trim().is_empty())
+}
+
+fn repaired_title_for_session(session: &UsageSession) -> Option<String> {
+    if session.activity_type != ActivityType::Active || is_browser(&session.bundle_id) {
+        return None;
+    }
+
+    let title = non_empty_string(session.app_name.clone())?;
+    if session.bundle_id == "com.cmuxterm.app" {
+        return session
+            .title
+            .as_deref()
+            .is_none_or(|current| current.trim() != title)
+            .then_some(title);
+    }
+
+    session
+        .title
+        .as_deref()
+        .is_none_or(|current| current.trim().is_empty())
+        .then_some(title)
 }
 
 fn seconds_between(start_time: DateTime<Local>, end_time: DateTime<Local>) -> Option<f64> {
@@ -2771,6 +2880,17 @@ mod tests {
     }
 
     #[test]
+    fn active_app_snapshot_parser_keeps_native_title() -> AnyhowResult<()> {
+        let snapshot = parse_active_app_snapshot("com.cmuxterm.app\ncmux\ncmux\n")
+            .ok_or_else(|| anyhow::anyhow!("snapshot should parse"))?;
+
+        assert_eq!(snapshot.bundle_id, "com.cmuxterm.app");
+        assert_eq!(snapshot.name, "cmux");
+        assert_eq!(snapshot.title.as_deref(), Some("cmux"));
+        Ok(())
+    }
+
+    #[test]
     fn session_duration_uses_full_start_end_window() -> AnyhowResult<()> {
         let start = Local
             .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
@@ -3148,6 +3268,64 @@ mod tests {
                 .any(|session| session.activity_type == ActivityType::Untracked)
         );
         assert_eq!(audit_sessions(&sessions, 30.0).gap_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn repair_titles_backfills_native_app_context_only() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let end = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing end"))?;
+        let cmux_entity = ActiveEntity {
+            bundle_id: "com.cmuxterm.app".to_string(),
+            name: "cmux".to_string(),
+            title: Some("Wispr Flow".to_string()),
+            url: None,
+            category: "Development".to_string(),
+            activity_type: ActivityType::Active,
+        };
+        let cmux = UsageSession::from_entity(&cmux_entity, start, end)
+            .ok_or_else(|| anyhow::anyhow!("missing cmux"))?;
+        let mut browser = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing browser start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 2, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing browser end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing browser"))?;
+        browser.title = None;
+
+        store.append_session(&cmux)?;
+        store.append_session(&browser)?;
+        let dry_run = store.repair_titles(true)?;
+        let report = store.repair_titles(false)?;
+        let sessions = store.load_sessions()?;
+
+        assert_eq!(dry_run.repaired, 1);
+        assert_eq!(report.repaired, 1);
+        assert!(
+            sessions
+                .iter()
+                .any(|session| session.bundle_id == "com.cmuxterm.app"
+                    && session.title.as_deref() == Some("cmux"))
+        );
+        assert!(
+            sessions
+                .iter()
+                .any(|session| session.bundle_id == "com.google.Chrome" && session.title.is_none())
+        );
         Ok(())
     }
 

@@ -9,7 +9,7 @@ In-progress local-first macOS activity tracker for building near-perfect persona
 - Tolerates brief active-app probe misses so transient AppleScript/macOS hiccups do not create false gaps.
 - Records longer unknown spans as `activity_type: "untracked"` when probing recovers, so missing time stays visible.
 - Captures browser URL when AppleScript supports the active browser.
-- Captures active browser tab/window title when macOS reports it, and falls back to the foreground app title/name when window-level title is unavailable.
+- Captures active browser tab/window title when macOS reports it, and atomically falls back to the foreground app title/name when window-level title is unavailable.
 - Stores source-of-truth logs in SQLite under `~/.activity_tracker/activity.db`.
 - Maintains indexed epoch timestamps in SQLite for scalable day/range queries.
 - Mirrors completed sessions to JSONL for audit/export fallback.
@@ -74,6 +74,7 @@ activity_tracker export --date 2026-06-03 --format jsonl
 activity_tracker import-csv ~/Desktop/usage_stats.csv --dry-run --json
 activity_tracker reclassify --dry-run --json
 activity_tracker repair-gaps --dry-run --json
+activity_tracker repair-titles --dry-run --json
 ```
 
 `agent --json` is the preferred first call for internal AI/reporting tools: it returns service readiness, freshness, warnings, today's audit, bounded summary/timeline context, open checkpoint, and paths. It defaults to the last 120 minutes, top 12 summary rows, and the 20 most recent timeline blocks; pass a date for one day, tune `--summary-limit`/`--timeline-limit`, or add `--include-sessions` when a tool needs raw sessions.
@@ -85,6 +86,7 @@ activity_tracker repair-gaps --dry-run --json
 `service status --json` reports launchd load/running state and PID without requiring agents to parse `launchctl` text.
 `reclassify` recomputes categories from current app and browser-domain rules, useful after improving category mappings.
 `repair-gaps` converts audited gaps in completed logs into explicit `activity_type: "untracked"` sessions so missing time stays visible instead of disappearing from totals.
+`repair-titles` backfills native-app title gaps with the app name when macOS exposes only app-level context; browser title gaps stay untouched because they are actionable browser-probe misses.
 
 No subcommand defaults to `track`, preserving the original simple run behavior.
 
