@@ -459,7 +459,7 @@ fn run_tracker(store: &LogStore, args: TrackArgs) -> Result<()> {
     let probe = MacOsProbe;
     let interval = Duration::from_secs(args.interval_seconds.max(1));
     let mut state = TrackerState::new(
-        observed_entity(&probe, args.idle_threshold_seconds)?,
+        observed_entity_or_none(&probe, args.idle_threshold_seconds),
         Local::now(),
         args.idle_threshold_seconds,
     );
@@ -2147,20 +2147,20 @@ fn init_tracing() {
         .init();
 }
 
-fn observed_entity(
-    probe: &MacOsProbe,
+fn observed_entity_or_none<P: ActivityProbe>(
+    probe: &P,
     idle_threshold_seconds: u64,
-) -> Result<Option<activity_tracker::ActiveEntity>> {
-    let active = probe.active_entity()?;
-    let idle_seconds = probe.idle_seconds()?;
+) -> Option<activity_tracker::ActiveEntity> {
+    let active = active_entity_or_none(probe);
+    let idle_seconds = idle_seconds_or_none(probe);
     if idle_seconds.is_some_and(|seconds| seconds >= idle_threshold_seconds as f64) {
-        Ok(Some(activity_tracker::idle_entity()))
+        Some(activity_tracker::idle_entity())
     } else {
-        Ok(active)
+        active
     }
 }
 
-fn active_entity_or_none(probe: &MacOsProbe) -> Option<activity_tracker::ActiveEntity> {
+fn active_entity_or_none<P: ActivityProbe>(probe: &P) -> Option<activity_tracker::ActiveEntity> {
     match probe.active_entity() {
         Ok(entity) => entity,
         Err(error) => {
@@ -2170,7 +2170,7 @@ fn active_entity_or_none(probe: &MacOsProbe) -> Option<activity_tracker::ActiveE
     }
 }
 
-fn idle_seconds_or_none(probe: &MacOsProbe) -> Option<f64> {
+fn idle_seconds_or_none<P: ActivityProbe>(probe: &P) -> Option<f64> {
     match probe.idle_seconds() {
         Ok(seconds) => seconds,
         Err(error) => {
@@ -2221,6 +2221,52 @@ mod tests {
             overlaps: Vec::new(),
             invalid_sessions: Vec::new(),
         }
+    }
+
+    struct FailingProbe;
+
+    impl ActivityProbe for FailingProbe {
+        fn active_entity(&self) -> Result<Option<activity_tracker::ActiveEntity>> {
+            Err(TrackerError::AppleScript("probe denied".to_string()))
+        }
+
+        fn idle_seconds(&self) -> Result<Option<f64>> {
+            Err(TrackerError::CommandTimeout("ioreg".to_string()))
+        }
+    }
+
+    struct IdleProbe;
+
+    impl ActivityProbe for IdleProbe {
+        fn active_entity(&self) -> Result<Option<activity_tracker::ActiveEntity>> {
+            Ok(Some(activity_tracker::ActiveEntity {
+                bundle_id: "com.apple.Terminal".to_string(),
+                name: "Terminal".to_string(),
+                title: Some("shell".to_string()),
+                url: None,
+                category: "Terminal".to_string(),
+                activity_type: activity_tracker::ActivityType::Active,
+            }))
+        }
+
+        fn idle_seconds(&self) -> Result<Option<f64>> {
+            Ok(Some(301.0))
+        }
+    }
+
+    #[test]
+    fn observed_entity_or_none_tolerates_startup_probe_failures() {
+        assert!(observed_entity_or_none(&FailingProbe, 300).is_none());
+    }
+
+    #[test]
+    fn observed_entity_or_none_marks_idle_on_startup() {
+        let entity = observed_entity_or_none(&IdleProbe, 300);
+
+        assert_eq!(
+            entity.map(|entity| entity.activity_type),
+            Some(activity_tracker::ActivityType::Idle)
+        );
     }
 
     #[test]

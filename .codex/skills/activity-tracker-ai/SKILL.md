@@ -88,6 +88,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Use `repair-titles` to backfill native app title gaps and exact-URL browser title gaps after title capture changes; do not mask browser misses with synthetic titles.
 - Use `repair-urls` to canonicalize known or blank-tab-surrounded URLs; do not infer ordinary missing browser URLs from surrounding sessions.
 - Preserve current session through short active-app probe misses; only create gaps after repeated misses.
+- Keep tracker startup tolerant of initial active-app or idle probe failures so launchd does not exit on transient macOS/AppleScript errors.
 - Keep `service install` LaunchAgent arguments aligned with configured sample interval and idle threshold.
 - Keep `service status --json` normalized enough for agents to inspect program, arguments, and log paths without parsing raw `launchctl` text.
 - Keep `service logs --json` bounded and path-aware so agents can inspect launchd stdout/stderr tails without shell-specific file reads.

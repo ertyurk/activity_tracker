@@ -7,6 +7,7 @@ In-progress local-first macOS activity tracker for building near-perfect persona
 - Tracks active macOS app sessions with start/end timestamps and exact duration.
 - Detects idle time from macOS HID idle state and records it as `activity_type: "idle"` instead of blaming the foreground app.
 - Tolerates brief active-app probe misses so transient AppleScript/macOS hiccups do not create false gaps.
+- Tolerates initial active-app/idle probe failures so the background service can start and recover instead of exiting.
 - Records longer unknown spans as `activity_type: "untracked"` when probing recovers, so missing time stays visible.
 - Captures active browser tab title and URL from the same active-tab AppleScript sample when the browser supports it.
 - Stabilizes brief same-browser title/URL probe misses from current tab context without mixing conflicting tab data.
