@@ -78,6 +78,8 @@ enum Command {
     Paths(OutputArgs),
     /// Print machine-readable CLI/data contract for app and agent harnesses.
     Schema(OutputArgs),
+    /// Print current active/checkpoint state for app and agent polling.
+    Now(OutputArgs),
     /// Print collector health, freshness, service state, and today audit.
     Health(HealthArgs),
     /// Print compact AI-agent readiness and recent report context.
@@ -379,6 +381,7 @@ fn run() -> Result<()> {
         Command::RepairContext(args) => repair_context(&store, args),
         Command::Paths(args) => print_paths(&store, args),
         Command::Schema(args) => print_schema(&store, args),
+        Command::Now(args) => print_now(&store, args),
         Command::Health(args) => print_health(&store, args),
         Command::Agent(args) => print_agent(&store, args),
         Command::Doctor(args) => doctor(&store, args),
@@ -1050,6 +1053,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "health",
                 "inventory",
                 "logs",
+                "now",
                 "paths",
                 "query",
                 "report",
@@ -1095,6 +1099,71 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         println!(
             "filters: --app, --title, --url, --text, --category, --domain, --activity-type, --limit"
         );
+        Ok(())
+    }
+}
+
+fn print_now(store: &LogStore, args: OutputArgs) -> Result<()> {
+    let now = Local::now();
+    let service = service_status_report();
+    let storage = store.storage_health(now, DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS)?;
+    let active_session = store.provisional_open_session(now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
+    let recent_checkpoint_ms = i64::try_from(DEFAULT_RECENT_CHECKPOINT_SECONDS)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(1000);
+    let checkpoint_recent = storage.open_session.as_ref().is_some_and(|checkpoint| {
+        now.timestamp_millis()
+            .saturating_sub(checkpoint.last_seen_at.timestamp_millis())
+            <= recent_checkpoint_ms
+    });
+    let ready = service.running && storage.fresh && checkpoint_recent;
+
+    if args.json {
+        let value = serde_json::json!({
+            "generated_at": now,
+            "ready": ready,
+            "service_running": service.running,
+            "service_pid": service.pid,
+            "fresh": storage.fresh,
+            "checkpoint_recent": checkpoint_recent,
+            "latest_observed_at": storage.latest_observed_at,
+            "latest_observed_age_seconds": storage.latest_observed_age_seconds,
+            "session_count": storage.session_count,
+            "active_session": active_session,
+            "open_session": storage.open_session,
+            "last_completed_session": storage.last_completed_session,
+            "paths": {
+                "root": store.root(),
+                "sqlite": store.db_path(),
+                "sessions_jsonl": store.sessions_path(),
+                "csv": store.csv_path(),
+                "exports": store.exports_dir(),
+                "logs": store.logs_dir(),
+            },
+        });
+        print_json(&value)
+    } else {
+        println!("ready: {}", yes_no(ready));
+        println!("service_running: {}", yes_no(service.running));
+        if let Some(pid) = service.pid {
+            println!("service_pid: {pid}");
+        }
+        println!("fresh: {}", yes_no(storage.fresh));
+        println!("checkpoint_recent: {}", yes_no(checkpoint_recent));
+        if let Some(seconds) = storage.latest_observed_age_seconds {
+            println!("latest_observed_age: {}", format_seconds(seconds));
+        }
+        if let Some(session) = active_session {
+            println!(
+                "active: {} | {} | {} | {}",
+                session.app_name,
+                session.category,
+                session.title.unwrap_or_default(),
+                session.url.unwrap_or_default()
+            );
+        } else {
+            println!("active: unavailable");
+        }
         Ok(())
     }
 }

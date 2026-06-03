@@ -19,6 +19,7 @@ In-progress local-first macOS activity tracker for building near-perfect persona
 - Reports collector health, freshness, service state, and today's data-quality audit via `health --json`.
 - Generates CSV exports for spreadsheet workflows.
 - Provides `--json` output for AI/tool callers.
+- Provides `now --json` for cheap current activity polling by SwiftUI/menu-bar clients.
 - Provides `inventory --json` for SwiftUI/AI filter menus across apps, domains, categories, and activity types.
 - Provides `schema --json` so SwiftUI/AI tool harnesses can discover the CLI/data contract without parsing help text.
 - Installs as a `launchd` user service for behind-the-scenes collection.
@@ -54,6 +55,7 @@ macOS will likely ask for Accessibility permission for the terminal or binary ho
 ```bash
 activity_tracker paths --json
 activity_tracker schema --json
+activity_tracker now --json
 activity_tracker agent --json
 activity_tracker agent --last-minutes 240 --json
 activity_tracker agent 2026-06-03 --json
@@ -99,6 +101,7 @@ Windowed summaries and timelines are clipped to the requested day/range/last-min
 `inventory --json` returns windowed app, domain, category, and activity-type facets with clipped seconds, percentages, session counts, first/last seen timestamps, and latest title/URL context for agents or SwiftUI filter pickers.
 `audit --json` reports log quality for a day or explicit window: gaps above a configurable threshold, overlaps, invalid rows, missing titles, browser sessions missing URLs, browser blank tabs, suspicious browser title/URL mismatches, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, bounded quality issue samples, and current open-session state. With `--last-minutes`, `--since`/`--until`, or `--from`/`--to`, audit uses the same indexed window query as `query`; explicit windows include leading/trailing uncovered spans as gaps. Known browser blank tabs are canonicalized as `about:newtab` for new sessions.
 `health --json` is the cheap service substrate check for agents: launchd state, storage freshness, latest observed activity age, open checkpoint, paths, and today's audit/quality counts and breakdowns.
+`now --json` is the cheapest current-state poll for SwiftUI/menu-bar clients: service running state, freshness, checkpoint recency, current provisional session, open checkpoint, latest completed session, and paths.
 `service status --json` reports launchd load/running state and PID without requiring agents to parse `launchctl` text.
 `schema --json` reports the stable CLI/data contract: storage paths, default thresholds, activity types, known categories, session fields, supported window args, filters, read commands, repair commands, service commands, quality issue kinds, and local-privacy flags.
 `reclassify` recomputes categories from current app and browser-domain rules, useful after improving category mappings.
