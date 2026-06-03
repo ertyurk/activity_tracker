@@ -229,6 +229,16 @@ pub struct AuditInvalidSession {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ServiceStatusReport {
+    pub label: String,
+    pub loaded: bool,
+    pub running: bool,
+    pub pid: Option<u32>,
+    pub raw: Option<String>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct ImportReport {
     pub scanned: usize,
@@ -1323,6 +1333,38 @@ pub fn service_status() -> Result<String> {
     }
 }
 
+pub fn service_status_report() -> ServiceStatusReport {
+    match service_status() {
+        Ok(raw) => parse_service_status(&raw),
+        Err(error) => ServiceStatusReport {
+            label: SERVICE_LABEL.to_string(),
+            loaded: false,
+            running: false,
+            pid: None,
+            raw: None,
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+#[must_use]
+pub fn parse_service_status(raw: &str) -> ServiceStatusReport {
+    let running = raw.lines().any(|line| line.trim() == "state = running");
+    let pid = raw.lines().find_map(parse_service_pid);
+    ServiceStatusReport {
+        label: SERVICE_LABEL.to_string(),
+        loaded: true,
+        running,
+        pid,
+        raw: Some(raw.to_string()),
+        error: None,
+    }
+}
+
+fn parse_service_pid(line: &str) -> Option<u32> {
+    line.trim().strip_prefix("pid = ")?.parse().ok()
+}
+
 #[must_use]
 pub fn launch_agent_plist(binary: &Path, stdout: &Path, stderr: &Path) -> String {
     format!(
@@ -2270,6 +2312,29 @@ mod tests {
             domain_from_url("https://www.Example.com:443/a?b=c").as_deref(),
             Some("example.com")
         );
+    }
+
+    #[test]
+    fn service_status_parser_extracts_running_pid() {
+        let raw = format!("gui/501/{SERVICE_LABEL} = {{\n\tstate = running\n\tpid = 12345\n}}\n");
+
+        let report = parse_service_status(&raw);
+
+        assert!(report.loaded);
+        assert!(report.running);
+        assert_eq!(report.pid, Some(12_345));
+        assert!(report.error.is_none());
+    }
+
+    #[test]
+    fn service_status_parser_handles_loaded_not_running() {
+        let raw = format!("gui/501/{SERVICE_LABEL} = {{\n\tstate = waiting\n}}\n");
+
+        let report = parse_service_status(&raw);
+
+        assert!(report.loaded);
+        assert!(!report.running);
+        assert_eq!(report.pid, None);
     }
 
     #[test]

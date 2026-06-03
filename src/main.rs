@@ -11,8 +11,8 @@ use activity_tracker::{
     DEFAULT_INTERVAL_SECONDS, DEFAULT_PROBE_MISS_TOLERANCE, DEFAULT_RECENT_CHECKPOINT_SECONDS,
     LogStore, MacOsProbe, ProbeMissStabilizer, Result, TrackerError, TrackerState, UsageSession,
     audit_sessions, day_bounds, filter_sessions, format_seconds, install_launch_agent,
-    legacy_data_dir, legacy_sessions_path, parse_date, service_status, summarize_all,
-    summarize_day, uninstall_launch_agent,
+    legacy_data_dir, legacy_sessions_path, parse_date, service_status, service_status_report,
+    summarize_all, summarize_day, uninstall_launch_agent,
 };
 use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -154,7 +154,7 @@ enum ServiceAction {
     /// Stop launchd service and remove plist.
     Uninstall,
     /// Print launchd service state.
-    Status,
+    Status(OutputArgs),
 }
 
 #[derive(Debug, Args)]
@@ -542,11 +542,17 @@ fn run_service(store: &LogStore, command: ServiceCommand) -> Result<()> {
             println!("{}", plist.display());
             Ok(())
         }
-        ServiceAction::Status => {
-            print!("{}", service_status()?);
-            io::stdout().flush()?;
-            Ok(())
-        }
+        ServiceAction::Status(args) => print_service_status(args),
+    }
+}
+
+fn print_service_status(args: OutputArgs) -> Result<()> {
+    if args.json {
+        print_json(&service_status_report())
+    } else {
+        print!("{}", service_status()?);
+        io::stdout().flush()?;
+        Ok(())
     }
 }
 

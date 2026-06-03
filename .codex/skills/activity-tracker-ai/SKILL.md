@@ -25,7 +25,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Health check: `cargo run -- doctor --json`
 - Foreground tracking: `cargo run -- track`
 - Background install: `cargo run --release -- service install`
-- Background status: `cargo run -- service status`
+- Background status: `cargo run -- service status --json`
 - Background remove: `cargo run -- service uninstall`
 - CSV import: `cargo run -- import-csv ~/Desktop/usage_stats.csv --json`
 

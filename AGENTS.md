@@ -33,6 +33,7 @@ cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 cargo run -- doctor
 cargo run -- paths --json
+cargo run -- service status --json
 cargo run -- day 2026-06-03 --json
 cargo run -- report 2026-06-03 --json
 cargo run -- audit 2026-06-03 --json
