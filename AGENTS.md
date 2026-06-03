@@ -11,6 +11,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - Preserve timestamps, app name, bundle ID, category, title, URL when available, and exact duration.
 - Categories should use app identity and browser URL domain when available; run `reclassify` after category rules improve.
 - Preserve `activity_type` and treat idle as first-class log data, not as foreground app time.
+- Preserve audited gaps as explicit `activity_type: "untracked"` sessions when repairing coverage.
 - Keep an `open_session` heartbeat checkpoint so service restarts recover the current span instead of dropping it.
 - Live query commands should include the current open session provisionally; exports should stay completed-session based.
 - Tolerate brief active-app probe misses; do not turn transient macOS/AppleScript failures into fake gaps.
@@ -44,6 +45,7 @@ cargo run -- logs 2026-06-03 --activity-type idle --json
 cargo run -- export --date 2026-06-03 --format csv
 cargo run -- import-csv ~/Desktop/usage_stats.csv --dry-run --json
 cargo run -- reclassify --dry-run --json
+cargo run -- repair-gaps --dry-run --json
 ```
 
 ## Repo-Local Skill

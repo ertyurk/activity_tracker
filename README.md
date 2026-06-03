@@ -61,12 +61,14 @@ activity_tracker export --date 2026-06-03 --format csv
 activity_tracker export --date 2026-06-03 --format jsonl
 activity_tracker import-csv ~/Desktop/usage_stats.csv --dry-run --json
 activity_tracker reclassify --dry-run --json
+activity_tracker repair-gaps --dry-run --json
 ```
 
 `report --json` is the preferred one-call payload for AI agents: it includes the day summary, raw sessions, current open-session checkpoint, provisional active session, and storage paths. `day`, `logs`, `summary`, and `report` include the active open session when it overlaps the query; exports stay based on completed sessions.
 `audit --json` reports log quality for a day: gaps above a configurable threshold, overlaps, invalid rows, and current open-session state.
 `service status --json` reports launchd load/running state and PID without requiring agents to parse `launchctl` text.
 `reclassify` recomputes categories from current app and browser-domain rules, useful after improving category mappings.
+`repair-gaps` converts audited gaps in completed logs into explicit `activity_type: "untracked"` sessions so missing time stays visible instead of disappearing from totals.
 
 No subcommand defaults to `track`, preserving the original simple run behavior.
 
@@ -124,6 +126,7 @@ Each JSONL record is one completed session:
 ```
 
 Idle sessions use `app_name: "Idle"`, `bundle_id: "local.activity_tracker.idle"`, `category: "Idle"`, and `activity_type: "idle"`.
+Repaired gap sessions use `app_name: "Untracked"`, `bundle_id: "local.activity_tracker.untracked"`, `category: "Untracked"`, and `activity_type: "untracked"`.
 
 Day summaries include sessions overlapping that local day and clip cross-midnight durations to the requested day. Live query commands include the current open session provisionally; persisted JSONL records only contain completed sessions.
 

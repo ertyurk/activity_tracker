@@ -21,6 +21,7 @@ pub const DEFAULT_RECENT_CHECKPOINT_SECONDS: u64 = 30;
 pub const DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS: f64 = 30.0;
 pub const SERVICE_LABEL: &str = "com.local.activity-tracker";
 pub const IDLE_BUNDLE_ID: &str = "local.activity_tracker.idle";
+pub const UNTRACKED_BUNDLE_ID: &str = "local.activity_tracker.untracked";
 
 #[derive(Debug, Error)]
 pub enum TrackerError {
@@ -70,6 +71,7 @@ pub enum ActivityType {
     #[default]
     Active,
     Idle,
+    Untracked,
 }
 
 impl ActivityType {
@@ -78,6 +80,7 @@ impl ActivityType {
         match self {
             Self::Active => "active",
             Self::Idle => "idle",
+            Self::Untracked => "untracked",
         }
     }
 }
@@ -89,6 +92,7 @@ impl std::str::FromStr for ActivityType {
         match value.trim().to_lowercase().as_str() {
             "" | "active" => Ok(Self::Active),
             "idle" => Ok(Self::Idle),
+            "untracked" => Ok(Self::Untracked),
             other => Err(TrackerError::InvalidActivityType(other.to_string())),
         }
     }
@@ -251,6 +255,14 @@ pub struct ImportReport {
 pub struct ReclassifyReport {
     pub scanned: usize,
     pub changed: usize,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct RepairGapsReport {
+    pub scanned: usize,
+    pub gaps_found: usize,
+    pub repaired: usize,
     pub dry_run: bool,
 }
 
@@ -444,11 +456,17 @@ impl LogStore {
     }
 
     pub fn append_session(&self, session: &UsageSession) -> Result<()> {
+        let _inserted = self.append_session_if_new(session)?;
+        Ok(())
+    }
+
+    fn append_session_if_new(&self, session: &UsageSession) -> Result<bool> {
         self.ensure_dirs()?;
-        if self.insert_session_db(session)? {
+        let inserted = self.insert_session_db(session)?;
+        if inserted {
             self.append_session_jsonl(session)?;
         }
-        Ok(())
+        Ok(inserted)
     }
 
     pub fn load_sessions(&self) -> Result<Vec<UsageSession>> {
@@ -639,6 +657,34 @@ impl LogStore {
         if !dry_run && report.changed > 0 {
             self.rewrite_jsonl_mirror_from_db()?;
             self.refresh_default_csv()?;
+        }
+
+        Ok(report)
+    }
+
+    pub fn repair_gaps(
+        &self,
+        gap_threshold_seconds: f64,
+        dry_run: bool,
+    ) -> Result<RepairGapsReport> {
+        self.ensure_dirs()?;
+        let sessions = self.load_sessions()?;
+        let audit = audit_sessions(&sessions, gap_threshold_seconds);
+        let mut report = RepairGapsReport {
+            scanned: sessions.len(),
+            gaps_found: audit.gap_count,
+            dry_run,
+            ..RepairGapsReport::default()
+        };
+
+        for gap in audit.gaps {
+            let Some(session) = untracked_session(gap.start_time, gap.end_time) else {
+                continue;
+            };
+            let repaired = dry_run || self.append_session_if_new(&session)?;
+            if repaired {
+                report.repaired += 1;
+            }
         }
 
         Ok(report)
@@ -1082,8 +1128,10 @@ pub fn category_for_activity(bundle_id: &str, name: &str, url: Option<&str>) -> 
 
 #[must_use]
 pub fn category_for_session(session: &UsageSession) -> String {
-    if session.activity_type == ActivityType::Idle {
-        return "Idle".to_string();
+    match session.activity_type {
+        ActivityType::Idle => return "Idle".to_string(),
+        ActivityType::Untracked => return "Untracked".to_string(),
+        ActivityType::Active => {}
     }
     category_for_activity(
         &session.bundle_id,
@@ -1186,6 +1234,24 @@ pub fn idle_entity() -> ActiveEntity {
         category: "Idle".to_string(),
         activity_type: ActivityType::Idle,
     }
+}
+
+#[must_use]
+pub fn untracked_session(
+    start_time: DateTime<Local>,
+    end_time: DateTime<Local>,
+) -> Option<UsageSession> {
+    seconds_between(start_time, end_time).map(|duration_seconds| UsageSession {
+        start_time,
+        end_time,
+        duration_seconds,
+        app_name: "Untracked".to_string(),
+        bundle_id: UNTRACKED_BUNDLE_ID.to_string(),
+        title: None,
+        category: "Untracked".to_string(),
+        url: None,
+        activity_type: ActivityType::Untracked,
+    })
 }
 
 #[must_use]
@@ -2282,6 +2348,56 @@ mod tests {
     }
 
     #[test]
+    fn repair_gaps_inserts_untracked_sessions_idempotently() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let first = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing first start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing first end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing first"))?;
+        let second = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 3, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing second start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 4, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing second end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing second"))?;
+
+        store.append_session(&first)?;
+        store.append_session(&second)?;
+        let dry_run = store.repair_gaps(30.0, true)?;
+        let first_repair = store.repair_gaps(30.0, false)?;
+        let second_repair = store.repair_gaps(30.0, false)?;
+        let sessions = store.load_sessions()?;
+
+        assert_eq!(dry_run.gaps_found, 1);
+        assert_eq!(dry_run.repaired, 1);
+        assert_eq!(first_repair.repaired, 1);
+        assert_eq!(second_repair.repaired, 0);
+        assert_eq!(sessions.len(), 3);
+        assert!(
+            sessions
+                .iter()
+                .any(|session| session.activity_type == ActivityType::Untracked)
+        );
+        assert_eq!(audit_sessions(&sessions, 30.0).gap_count, 0);
+        Ok(())
+    }
+
+    #[test]
     fn import_csv_dry_run_does_not_write() -> AnyhowResult<()> {
         let dir = tempfile::tempdir()?;
         let store = LogStore::new(dir.path().join("store"));
@@ -2315,6 +2431,15 @@ mod tests {
         assert_eq!(
             sessions.first().map(|s| s.activity_type),
             Some(ActivityType::Active)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn activity_type_parses_untracked() -> AnyhowResult<()> {
+        assert_eq!(
+            "untracked".parse::<ActivityType>()?,
+            ActivityType::Untracked
         );
         Ok(())
     }

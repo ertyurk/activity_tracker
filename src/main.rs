@@ -52,6 +52,8 @@ enum Command {
     ImportCsv(ImportCsvArgs),
     /// Recompute categories from current app/domain rules.
     Reclassify(ReclassifyArgs),
+    /// Insert explicit untracked sessions for completed-log gaps.
+    RepairGaps(RepairGapsArgs),
     /// Print storage and service paths.
     Paths(OutputArgs),
     /// Check macOS permissions, probes, and writable storage.
@@ -145,6 +147,16 @@ struct ReclassifyArgs {
     json: bool,
 }
 
+#[derive(Debug, Args)]
+struct RepairGapsArgs {
+    #[arg(long, default_value_t = DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS)]
+    gap_threshold_seconds: f64,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    json: bool,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ExportFormat {
     Csv,
@@ -203,6 +215,7 @@ fn run() -> Result<()> {
         Command::Export(args) => export_sessions(&store, args),
         Command::ImportCsv(args) => import_csv(&store, args),
         Command::Reclassify(args) => reclassify(&store, args),
+        Command::RepairGaps(args) => repair_gaps(&store, args),
         Command::Paths(args) => print_paths(&store, args),
         Command::Doctor(args) => doctor(&store, args),
         Command::Service(command) => run_service(&store, command),
@@ -467,6 +480,19 @@ fn reclassify(store: &LogStore, args: ReclassifyArgs) -> Result<()> {
     } else {
         println!("scanned: {}", report.scanned);
         println!("changed: {}", report.changed);
+        println!("dry_run: {}", yes_no(report.dry_run));
+        Ok(())
+    }
+}
+
+fn repair_gaps(store: &LogStore, args: RepairGapsArgs) -> Result<()> {
+    let report = store.repair_gaps(args.gap_threshold_seconds, args.dry_run)?;
+    if args.json {
+        print_json(&report)
+    } else {
+        println!("scanned: {}", report.scanned);
+        println!("gaps_found: {}", report.gaps_found);
+        println!("repaired: {}", report.repaired);
         println!("dry_run: {}", yes_no(report.dry_run));
         Ok(())
     }

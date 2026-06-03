@@ -20,6 +20,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 7. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
 8. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
 9. After category rule changes, run `cargo run -- reclassify --dry-run --json`, then rerun without `--dry-run`.
+10. After auditing gaps, run `cargo run -- repair-gaps --dry-run --json`, then rerun without `--dry-run` to insert explicit untracked sessions.
 
 ## Operations
 
@@ -39,6 +40,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Use app identity plus browser URL domains for categories; reclassify stored sessions when mappings change.
 - Preserve current session through short active-app probe misses; only create gaps after repeated misses.
 - Record idle as `activity_type: "idle"` with `bundle_id: "local.activity_tracker.idle"` once HID idle time crosses threshold.
+- Repair real gaps as `activity_type: "untracked"` with `bundle_id: "local.activity_tracker.untracked"` rather than hiding missing time.
 - Day math must include overlapping sessions and clip summary duration to local day bounds.
 - Add `--json` for new read commands so AI tools can consume them.
 - Keep local privacy: no network sync unless explicitly requested.
