@@ -134,7 +134,7 @@ Service/setup payloads:
 - `verify --json` checks SQLite integrity plus JSONL and default CSV readability/count/content sync.
 - `service status --json` reports launchd load/running state, PID, program, arguments, and log paths.
 - `service logs --json` reports bounded launchd stdout/stderr tails.
-- `schema --json` reports the stable CLI/data contract.
+- `schema --json` reports the stable CLI/data contract, including import/repair report fields.
 - `--json` can be passed command-locally (`doctor --json`) or globally before the subcommand (`--json doctor`).
 - Global `--json` requires an explicit subcommand; plain no-subcommand mode still defaults to foreground `track` for humans.
 - Runtime failures under `--json` emit `{ "ok": false, "error": { "code", "message" } }`.
@@ -142,7 +142,7 @@ Service/setup payloads:
 Repair/export hooks:
 
 - `reclassify` recomputes categories from current app and browser-domain rules.
-- `reclassify`, `repair-gaps`, `repair-titles`, `repair-urls`, and `repair-context` accept optional `--from`/`--to`, `--since`/`--until`, or `--last-minutes` windows.
+- `reclassify`, `repair-gaps`, `repair-titles`, `repair-urls`, and `repair-context` accept optional `--from`/`--to`, `--since`/`--until`, or `--last-minutes` windows and include `generated_at` plus `window` in JSON reports.
 - `repair-gaps` converts audited gaps into explicit `activity_type: "untracked"` sessions.
 - `repair-titles` backfills native-app title gaps and exact-URL browser title gaps.
 - `repair-urls` canonicalizes safe URL-only fixes such as known browser blank tabs.

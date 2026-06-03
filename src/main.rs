@@ -1241,6 +1241,67 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     let now = Local::now();
     let service_install_binary_requirements =
         ["absolute_path", "exists", "regular_file", "executable"];
+    let repair_window_fields = [
+        "from",
+        "to",
+        "since",
+        "until",
+        "last_minutes",
+        "start",
+        "end",
+    ];
+    let import_report_fields = ["scanned", "imported", "skipped_duplicates", "dry_run"];
+    let reclassify_report_fields = ["generated_at", "window", "scanned", "changed", "dry_run"];
+    let repair_gaps_report_fields = [
+        "generated_at",
+        "window",
+        "scanned",
+        "gaps_found",
+        "repaired",
+        "dry_run",
+    ];
+    let repair_titles_report_fields = [
+        "generated_at",
+        "window",
+        "scanned",
+        "repaired",
+        "native_repaired",
+        "browser_repaired",
+        "dry_run",
+    ];
+    let repair_urls_report_fields = [
+        "generated_at",
+        "window",
+        "scanned",
+        "repaired",
+        "blank_tab_urls",
+        "blank_tab_context_urls",
+        "dry_run",
+    ];
+    let repair_context_report_fields = [
+        "generated_at",
+        "window",
+        "scanned",
+        "mismatches_found",
+        "missing_titles_found",
+        "missing_urls_found",
+        "repaired",
+        "title_repaired",
+        "url_repaired",
+        "missing_title_repaired",
+        "missing_url_repaired",
+        "neighbor_repaired",
+        "unique_observation_repaired",
+        "untracked_repaired",
+        "dry_run",
+    ];
+    let repair_mirror_report_fields = [
+        "sqlite_session_count",
+        "jsonl_session_count",
+        "csv_path",
+        "jsonl_path",
+        "repaired",
+    ];
     let json_error_codes = [
         "apple_script",
         "command",
@@ -1267,7 +1328,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     ];
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 19,
+            "schema_version": 20,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1337,6 +1398,14 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "format",
                 "session_count",
             ],
+            "import_report_fields": import_report_fields,
+            "repair_window_fields": repair_window_fields,
+            "reclassify_report_fields": reclassify_report_fields,
+            "repair_gaps_report_fields": repair_gaps_report_fields,
+            "repair_titles_report_fields": repair_titles_report_fields,
+            "repair_urls_report_fields": repair_urls_report_fields,
+            "repair_context_report_fields": repair_context_report_fields,
+            "repair_mirror_report_fields": repair_mirror_report_fields,
             "service_install_args": ["--bin", "--interval-seconds", "--idle-threshold-seconds", "--no-load", "--json"],
             "service_uninstall_args": ["--json"],
             "service_install_persisted_args": ["--data-dir", "--interval-seconds", "--idle-threshold-seconds"],
@@ -1547,7 +1616,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 19");
+        println!("schema_version: 20");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
