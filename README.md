@@ -1,6 +1,8 @@
 # Activity Tracker
 
-In-progress local-first macOS activity tracker for building near-perfect personal work logs. The goal is a quiet background service substrate that records active app/browser sessions durably, then gives humans, a future SwiftUI app, and internal AI agents clean CLI hooks to query history by day, app, title, category, URL/domain, and export format.
+In-progress local-first macOS activity tracker for building near-perfect personal work logs.
+
+The goal is a quiet background service substrate that records active app/browser sessions durably, then gives humans, a future SwiftUI app, and internal AI agents clean CLI hooks to query history by day, app, title, category, URL/domain, and export format.
 
 ## Current Shape
 
@@ -12,9 +14,11 @@ In-progress local-first macOS activity tracker for building near-perfect persona
 - Captures active browser tab title and URL from the same active-tab AppleScript sample when the browser supports it.
 - Stabilizes brief same-browser title/URL probe misses from current tab context without mixing conflicting tab data.
 - Converts longer browser tab-context outages into `activity_type: "untracked"` instead of low-quality browser rows with empty title/URL.
-- Captures native app window title when macOS reports it, and atomically falls back to the foreground app title/name when window-level title is unavailable.
+- Captures native app window title when macOS reports it.
+- Falls back to the foreground app title/name when window-level title is unavailable.
 - Stores source-of-truth logs in SQLite under `~/.activity_tracker/activity.db`.
-- Configures SQLite connections with WAL, normal synchronous mode, foreign keys, and a busy timeout so CLI reads can coexist with the background writer.
+- Configures SQLite with WAL, normal synchronous mode, foreign keys, and a busy timeout.
+- Lets CLI reads coexist with the background writer.
 - Maintains indexed epoch timestamps in SQLite for scalable day/range queries.
 - Mirrors completed sessions to JSONL for audit/export fallback and keeps the default CSV view current.
 - Maintains an open-session checkpoint so a restart can recover the active span instead of losing it.
@@ -101,40 +105,63 @@ activity_tracker repair-context --last-minutes 120 --dry-run --json
 activity_tracker repair-mirror --json
 ```
 
-Recommended first call for internal AI/reporting tools:
+Preferred first call for internal AI/reporting tools:
 
-- `agent --json` returns readiness, `report_ready`, `action_required`, repair plan, window-scoped quality gate, warnings, window audit, today background audit, bounded summary/timeline context, open checkpoint, and paths.
-- Defaults: last 120 minutes, top 12 summary rows, and 20 recent timeline blocks.
-- Use a date for one-day reports, tune `--summary-limit`/`--timeline-limit`, or add `--include-sessions` when a tool needs raw sessions.
+`agent --json` returns:
+
+- service readiness, `report_ready`, and `action_required`
+- repair plan with actionable commands
+- window-scoped quality gate, warnings, and audit
+- today-wide audit context
+- bounded summary and recent timeline context
+- open checkpoint and storage paths
+
+Defaults:
+
+- window: last 120 minutes
+- summary rows: top 12
+- timeline blocks: 20 most recent
+
+Useful variants:
+
+- `agent YYYY-MM-DD --json` for one-day report context
+- `agent --summary-limit N --timeline-limit N --json` for larger/smaller context
+- `agent --include-sessions --json` when a tool needs raw sessions
 
 Readiness and quality:
 
 - `agent.report_ready` requires service binary/config, freshness, coverage, and full storage verification to be clean.
-- If JSONL or CSV derived storage is broken while SQLite is healthy, `agent.repair_plan.actionable_commands` includes `activity_tracker repair-mirror --json`.
-- Rolling `agent --last-minutes` windows treat uncovered leading/trailing spans as gaps so auto-report tools can detect partial coverage.
-- `audit --json` reports gaps, overlaps, invalid rows, missing titles, missing browser URLs, blank browser tabs, suspicious browser title/URL mismatches, untracked/idle counts, uncategorized counts, quality breakdowns, bounded samples, and current open-session state.
+- If derived JSONL/CSV storage is broken while SQLite is healthy, repair plan includes `activity_tracker repair-mirror --json`.
+- Rolling `agent --last-minutes` windows treat uncovered leading/trailing spans as gaps.
+- `audit --json` reports coverage, context richness, quality breakdowns, bounded samples, and open-session state.
+- Audit quality includes gaps, overlaps, invalid rows, missing titles/URLs, blank tabs, context mismatches, idle/untracked counts, and uncategorized counts.
 
 History reads:
 
-- `report --json` is the preferred full daily payload: day summary, raw sessions, current checkpoint, provisional active session, and storage paths.
-- `query --json` is the preferred cross-day/all-history search payload: local date windows, precise RFC3339 windows, rolling `--last-minutes`, filters, summary, compact timeline, raw sessions, and open checkpoint.
+- `report --json` is the preferred full daily payload.
+- Report includes day summary, raw sessions, current checkpoint, provisional active session, and storage paths.
+- `query --json` is the preferred cross-day/all-history search payload.
+- Query supports local date windows, RFC3339 windows, rolling `--last-minutes`, filters, summary, compact timeline, raw sessions, and open checkpoint.
 - `day`, `logs`, `query`, `summary`, and `report` include the active open session when it overlaps the query.
 - Exports stay based on completed sessions.
 - `--text` searches app, bundle, title, URL, domain, category, and activity type.
 - `query` and `logs` accept `--order asc|desc`; use `--order desc --limit N` for newest matching rows.
-- Windowed summaries and timelines are clipped to the requested day/range/last-minutes bounds; raw session arrays keep original persisted bounds for audit/debug context.
+- Windowed summaries and timelines are clipped to requested day/range/last-minutes bounds.
+- Raw session arrays keep original persisted bounds for audit/debug context.
 - `timeline --json` returns compact ordered blocks grouped by app/domain/category.
 - `inventory --json` returns windowed app, domain, category, and activity-type facets for agents or SwiftUI filter pickers.
 
 Service/setup payloads:
 
-- `health --json` is the service substrate check: launchd state, persisted service binary/argument validation, storage freshness, storage verification, latest activity age, open checkpoint, paths, and today's audit/quality breakdowns.
-- `doctor --json` is the setup diagnostic payload: writable storage, osascript availability, active-app probe status/error, idle probe status/error, launchd service binary/config state, storage verification, paths, and permission/service hints.
+- `health --json` is the service substrate check.
+- Health includes launchd state, service binary/argument validation, freshness, storage verification, latest activity age, open checkpoint, paths, and today's audit.
+- `doctor --json` is the setup diagnostic payload.
+- Doctor includes writable storage, osascript availability, probe status/errors, launchd config validation, storage verification, paths, and hints.
 - `now --json` is the cheap current-state poll for SwiftUI/menu-bar clients.
 - `verify --json` checks SQLite integrity plus JSONL and default CSV readability/count/content sync.
 - `service status --json` reports launchd load/running state, PID, program, arguments, and log paths.
 - `service logs --json` reports bounded launchd stdout/stderr tails.
-- `schema --json` reports the stable CLI/data contract, including import/repair report fields.
+- `schema --json` reports the stable CLI/data contract, including read payload, import, and repair report fields.
 - `--json` can be passed command-locally (`doctor --json`) or globally before the subcommand (`--json doctor`).
 - Global `--json` requires an explicit subcommand; plain no-subcommand mode still defaults to foreground `track` for humans.
 - Runtime failures under `--json` emit `{ "ok": false, "error": { "code", "message" } }`.
@@ -142,11 +169,14 @@ Service/setup payloads:
 Repair/export hooks:
 
 - `reclassify` recomputes categories from current app and browser-domain rules.
-- `reclassify`, `repair-gaps`, `repair-titles`, `repair-urls`, and `repair-context` accept optional `--from`/`--to`, `--since`/`--until`, or `--last-minutes` windows and include `generated_at` plus `window` in JSON reports.
+- `reclassify`, `repair-gaps`, `repair-titles`, `repair-urls`, and `repair-context` accept scoped windows.
+- Repair windows support `--from`/`--to`, `--since`/`--until`, or `--last-minutes`.
+- JSON repair reports include `generated_at` plus `window`.
 - `repair-gaps` converts audited gaps into explicit `activity_type: "untracked"` sessions.
 - `repair-titles` backfills native-app title gaps and exact-URL browser title gaps.
 - `repair-urls` canonicalizes safe URL-only fixes such as known browser blank tabs.
-- `repair-context` repairs high-confidence browser context mismatches/missing fields and converts short unrecoverable context rows to untracked time.
+- `repair-context` repairs high-confidence browser context mismatches/missing fields.
+- `repair-context` converts short unrecoverable context rows to untracked time.
 - `repair-mirror` rewrites JSONL and CSV mirrors from SQLite.
 - `export --json` writes CSV/JSONL and returns path, date scope, format, and session count.
 
@@ -167,7 +197,11 @@ Files:
 - `logs/`: launchd stdout/stderr logs
 
 Legacy data from `~/Library/Application Support/activity_tracker/sessions.jsonl` is auto-migrated into SQLite on first service/doctor/write run.
-The SQLite DB also keeps a single `open_session` heartbeat row while the tracker is running. Clean shutdown clears it; restart recovery converts it into a completed session and then starts a fresh checkpoint.
+
+The SQLite DB also keeps a single `open_session` heartbeat row while the tracker is running.
+Clean shutdown clears it.
+Restart recovery converts it into a completed session and then starts a fresh checkpoint.
+
 SQLite uses WAL plus a short busy timeout so agent/SwiftUI reads do not fail during normal heartbeat writes.
 
 Override per command:
@@ -184,7 +218,8 @@ activity_tracker import-csv ~/Desktop/usage_stats.csv --json
 ```
 
 Imports skip duplicates using session start/end/app/bundle/title/url/activity type.
-Categories are app-aware and domain-aware. Browser sessions can classify as Communication, Email, Calendar, Development, AI, Design, Productivity, Social, Writing, or Research based on URL domain.
+Categories are app-aware and domain-aware.
+Browser sessions can classify as Communication, Email, Calendar, Development, AI, Design, Productivity, Social, Writing, or Research based on URL domain.
 
 ## Data Contract
 
@@ -204,10 +239,24 @@ Each JSONL record is one completed session:
 }
 ```
 
-Idle sessions use `app_name: "Idle"`, `bundle_id: "local.activity_tracker.idle"`, `category: "Idle"`, and `activity_type: "idle"`.
-Repaired gap sessions use `app_name: "Untracked"`, `bundle_id: "local.activity_tracker.untracked"`, `category: "Untracked"`, and `activity_type: "untracked"`.
+Idle sessions:
 
-Day summaries include sessions overlapping that local day and clip cross-midnight durations to the requested day. Range queries include sessions overlapping the optional `[from midnight, day after to midnight)` local-date window, precise RFC3339 timestamp windows, or last-N-minute windows. Live query commands include the current open session provisionally; persisted JSONL records only contain completed sessions.
+- `app_name: "Idle"`
+- `bundle_id: "local.activity_tracker.idle"`
+- `category: "Idle"`
+- `activity_type: "idle"`
+
+Repaired gap sessions:
+
+- `app_name: "Untracked"`
+- `bundle_id: "local.activity_tracker.untracked"`
+- `category: "Untracked"`
+- `activity_type: "untracked"`
+
+Day summaries include sessions overlapping that local day and clip cross-midnight durations to the requested day.
+Range queries include sessions overlapping the optional `[from midnight, day after to midnight)` local-date window, precise RFC3339 timestamp windows, or last-N-minute windows.
+Live query commands include the current open session provisionally.
+Persisted JSONL records only contain completed sessions.
 
 ## Service Commands
 
@@ -219,7 +268,25 @@ activity_tracker service logs --lines 80 --json
 activity_tracker service uninstall
 ```
 
-`service install` validates that the selected binary is an absolute executable file, writes `~/Library/LaunchAgents/com.local.activity-tracker.plist`, loads it, and starts `activity_tracker --data-dir <root> track --quiet` with persisted data root, interval, and idle-threshold arguments. `service install --json` returns the plist path, binary path, data root, load state, and persisted interval/idle config; invalid binaries fail with `error.code: "invalid_service_binary"`. `service uninstall --json` returns the plist path and whether the plist is removed or already absent.
+`service install` validates that the selected binary is an absolute executable file, writes `~/Library/LaunchAgents/com.local.activity-tracker.plist`, loads it, and starts:
+
+```bash
+activity_tracker --data-dir <root> track --quiet
+```
+
+The LaunchAgent stores the data root, interval, and idle-threshold arguments.
+
+`service install --json` returns:
+
+- plist path
+- binary path
+- data root
+- load state
+- persisted interval and idle config
+
+Invalid binaries fail with `error.code: "invalid_service_binary"`.
+
+`service uninstall --json` returns the plist path and whether the plist is removed or already absent.
 
 Default idle threshold is 300 seconds and default sampling interval is 2 seconds. Foreground or service runs can override them:
 

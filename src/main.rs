@@ -1241,6 +1241,168 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     let now = Local::now();
     let service_install_binary_requirements =
         ["absolute_path", "exists", "regular_file", "executable"];
+    let paths_fields = [
+        "root",
+        "sqlite",
+        "sessions_jsonl",
+        "csv",
+        "exports",
+        "logs",
+        "legacy_root",
+        "legacy_sessions_jsonl",
+    ];
+    let summary_row_fields = ["name", "seconds", "percentage"];
+    let summary_fields = [
+        "session_count",
+        "total_seconds",
+        "by_activity_type",
+        "by_category",
+        "by_app",
+        "by_domain",
+    ];
+    let timeline_block_fields = [
+        "start_time",
+        "end_time",
+        "duration_seconds",
+        "activity_type",
+        "category",
+        "app_name",
+        "bundle_id",
+        "domain",
+        "title",
+        "url",
+        "session_count",
+    ];
+    let inventory_row_fields = [
+        "name",
+        "secondary",
+        "seconds",
+        "percentage",
+        "session_count",
+        "first_seen",
+        "last_seen",
+        "latest_title",
+        "latest_url",
+    ];
+    let inventory_fields = [
+        "generated_at",
+        "limit",
+        "window",
+        "session_count",
+        "total_seconds",
+        "by_activity_type",
+        "by_category",
+        "by_app",
+        "by_domain",
+    ];
+    let query_filter_fields = [
+        "app",
+        "title",
+        "url",
+        "text",
+        "category",
+        "domain",
+        "activity_type",
+        "limit",
+        "order",
+    ];
+    let query_fields = [
+        "generated_at",
+        "from",
+        "to",
+        "since",
+        "until",
+        "last_minutes",
+        "window_start",
+        "window_end",
+        "filters",
+        "summary",
+        "timeline",
+        "sessions",
+        "open_session",
+    ];
+    let report_fields = [
+        "date",
+        "generated_at",
+        "summary",
+        "timeline",
+        "sessions",
+        "active_session",
+        "open_session",
+        "includes_active_session",
+        "paths",
+    ];
+    let audit_report_fields = [
+        "date",
+        "window",
+        "generated_at",
+        "gap_threshold_seconds",
+        "summary",
+        "audit",
+        "includes_active_session",
+        "open_session",
+    ];
+    let audit_fields = [
+        "session_count",
+        "gap_count",
+        "overlap_count",
+        "invalid_session_count",
+        "active_session_count",
+        "idle_session_count",
+        "untracked_session_count",
+        "missing_title_count",
+        "browser_session_count",
+        "browser_missing_url_count",
+        "browser_blank_tab_count",
+        "browser_context_mismatch_count",
+        "uncategorized_session_count",
+        "missing_title_by_app",
+        "browser_missing_url_by_app",
+        "browser_missing_url_by_title",
+        "browser_blank_tab_by_app",
+        "browser_context_mismatch_by_domain",
+        "uncategorized_by_app",
+        "quality_issues",
+        "total_gap_seconds",
+        "longest_gap_seconds",
+        "gaps",
+        "overlaps",
+        "invalid_sessions",
+    ];
+    let audit_quality_row_fields = ["name", "count"];
+    let audit_quality_issue_fields = [
+        "kind",
+        "start_time",
+        "end_time",
+        "duration_seconds",
+        "app_name",
+        "bundle_id",
+        "title",
+        "category",
+        "url",
+        "activity_type",
+    ];
+    let audit_gap_fields = [
+        "start_time",
+        "end_time",
+        "duration_seconds",
+        "previous_app",
+        "next_app",
+    ];
+    let audit_overlap_fields = [
+        "start_time",
+        "end_time",
+        "duration_seconds",
+        "first_app",
+        "second_app",
+    ];
+    let audit_invalid_session_fields = [
+        "start_time",
+        "end_time",
+        "duration_seconds",
+        "app_name",
+        "reason",
+    ];
     let repair_window_fields = [
         "from",
         "to",
@@ -1328,7 +1490,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     ];
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 20,
+            "schema_version": 21,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1387,6 +1549,23 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 {"name": "activity_type", "type": "active|idle|untracked", "required": true},
                 {"name": "url", "type": "string|null", "required": false},
             ],
+            "paths_fields": paths_fields,
+            "day_fields": summary_fields,
+            "summary_fields": summary_fields,
+            "summary_row_fields": summary_row_fields,
+            "timeline_block_fields": timeline_block_fields,
+            "inventory_fields": inventory_fields,
+            "inventory_row_fields": inventory_row_fields,
+            "query_fields": query_fields,
+            "query_filter_fields": query_filter_fields,
+            "report_fields": report_fields,
+            "audit_report_fields": audit_report_fields,
+            "audit_fields": audit_fields,
+            "audit_quality_row_fields": audit_quality_row_fields,
+            "audit_quality_issue_fields": audit_quality_issue_fields,
+            "audit_gap_fields": audit_gap_fields,
+            "audit_overlap_fields": audit_overlap_fields,
+            "audit_invalid_session_fields": audit_invalid_session_fields,
             "window_args": ["--from", "--to", "--since", "--until", "--last-minutes"],
             "filters": ["--app", "--title", "--url", "--text", "--category", "--domain", "--activity-type", "--limit", "--order"],
             "export_args": ["--date", "--format", "--output", "--json"],
@@ -1616,7 +1795,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 20");
+        println!("schema_version: 21");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
