@@ -556,6 +556,12 @@ fn print_audit(store: &LogStore, args: AuditArgs) -> Result<()> {
             audit.uncategorized_session_count
         );
         println!("untracked_sessions: {}", audit.untracked_session_count);
+        print_quality_rows("missing_title_by_app", &audit.missing_title_by_app);
+        print_quality_rows(
+            "browser_missing_url_by_title",
+            &audit.browser_missing_url_by_title,
+        );
+        print_quality_rows("uncategorized_by_app", &audit.uncategorized_by_app);
         println!("total_gap: {}", format_seconds(audit.total_gap_seconds));
         println!("longest_gap: {}", format_seconds(audit.longest_gap_seconds));
         Ok(())
@@ -736,6 +742,12 @@ fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
             "today_untracked_sessions: {}",
             audit.untracked_session_count
         );
+        print_quality_rows("today_missing_title_by_app", &audit.missing_title_by_app);
+        print_quality_rows(
+            "today_browser_missing_url_by_title",
+            &audit.browser_missing_url_by_title,
+        );
+        print_quality_rows("today_uncategorized_by_app", &audit.uncategorized_by_app);
         Ok(())
     }
 }
@@ -847,6 +859,16 @@ fn print_rows(label: &str, rows: &[activity_tracker::SummaryRow]) {
             format_seconds(row.seconds),
             row.percentage
         );
+    }
+}
+
+fn print_quality_rows(label: &str, rows: &[activity_tracker::AuditQualityRow]) {
+    if rows.is_empty() {
+        return;
+    }
+    println!("{label}:");
+    for row in rows {
+        println!("  {} | {}", row.name, row.count);
     }
 }
 

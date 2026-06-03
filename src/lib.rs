@@ -252,11 +252,21 @@ pub struct ActivityAudit {
     pub browser_session_count: usize,
     pub browser_missing_url_count: usize,
     pub uncategorized_session_count: usize,
+    pub missing_title_by_app: Vec<AuditQualityRow>,
+    pub browser_missing_url_by_app: Vec<AuditQualityRow>,
+    pub browser_missing_url_by_title: Vec<AuditQualityRow>,
+    pub uncategorized_by_app: Vec<AuditQualityRow>,
     pub total_gap_seconds: f64,
     pub longest_gap_seconds: f64,
     pub gaps: Vec<AuditGap>,
     pub overlaps: Vec<AuditOverlap>,
     pub invalid_sessions: Vec<AuditInvalidSession>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditQualityRow {
+    pub name: String,
+    pub count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1238,13 +1248,7 @@ pub fn audit_sessions(sessions: &[UsageSession], gap_threshold_seconds: f64) -> 
         .count();
     let missing_title_count = sorted
         .iter()
-        .filter(|session| {
-            session.activity_type == ActivityType::Active
-                && session
-                    .title
-                    .as_deref()
-                    .is_none_or(|title| title.trim().is_empty())
-        })
+        .filter(|session| session_missing_title(session))
         .count();
     let browser_session_count = sorted
         .iter()
@@ -1252,18 +1256,43 @@ pub fn audit_sessions(sessions: &[UsageSession], gap_threshold_seconds: f64) -> 
         .count();
     let browser_missing_url_count = sorted
         .iter()
-        .filter(|session| {
-            is_browser(&session.bundle_id)
-                && session
-                    .url
-                    .as_deref()
-                    .is_none_or(|url| url.trim().is_empty())
-        })
+        .filter(|session| browser_missing_url(session))
         .count();
     let uncategorized_session_count = sorted
         .iter()
         .filter(|session| session.category == "Uncategorized")
         .count();
+    let missing_title_by_app = quality_rows(
+        sorted
+            .iter()
+            .filter(|session| session_missing_title(session))
+            .map(app_identity),
+    );
+    let browser_missing_url_by_app = quality_rows(
+        sorted
+            .iter()
+            .filter(|session| browser_missing_url(session))
+            .map(app_identity),
+    );
+    let browser_missing_url_by_title = quality_rows(
+        sorted
+            .iter()
+            .filter(|session| browser_missing_url(session))
+            .map(|session| {
+                session
+                    .title
+                    .as_deref()
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or("<missing title>")
+                    .to_string()
+            }),
+    );
+    let uncategorized_by_app = quality_rows(
+        sorted
+            .iter()
+            .filter(|session| session.category == "Uncategorized")
+            .map(app_identity),
+    );
     let gap_threshold_seconds = gap_threshold_seconds.max(0.0);
 
     for pair in sorted.windows(2) {
@@ -1319,6 +1348,10 @@ pub fn audit_sessions(sessions: &[UsageSession], gap_threshold_seconds: f64) -> 
         browser_session_count,
         browser_missing_url_count,
         uncategorized_session_count,
+        missing_title_by_app,
+        browser_missing_url_by_app,
+        browser_missing_url_by_title,
+        uncategorized_by_app,
         total_gap_seconds,
         longest_gap_seconds,
         gaps,
@@ -2077,6 +2110,43 @@ fn sorted_rows(map: HashMap<String, f64>, total_seconds: f64) -> Vec<SummaryRow>
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     rows
+}
+
+fn quality_rows<I>(names: I) -> Vec<AuditQualityRow>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut counts = HashMap::<String, usize>::new();
+    for name in names {
+        *counts.entry(name).or_default() += 1;
+    }
+
+    let mut rows: Vec<_> = counts
+        .into_iter()
+        .map(|(name, count)| AuditQualityRow { name, count })
+        .collect();
+    rows.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+    rows
+}
+
+fn app_identity(session: &UsageSession) -> String {
+    format!("{} ({})", session.app_name, session.bundle_id)
+}
+
+fn session_missing_title(session: &UsageSession) -> bool {
+    session.activity_type == ActivityType::Active
+        && session
+            .title
+            .as_deref()
+            .is_none_or(|title| title.trim().is_empty())
+}
+
+fn browser_missing_url(session: &UsageSession) -> bool {
+    is_browser(&session.bundle_id)
+        && session
+            .url
+            .as_deref()
+            .is_none_or(|url| url.trim().is_empty())
 }
 
 fn seconds_between(start_time: DateTime<Local>, end_time: DateTime<Local>) -> Option<f64> {
@@ -3212,6 +3282,27 @@ mod tests {
         assert_eq!(audit.browser_session_count, 1);
         assert_eq!(audit.browser_missing_url_count, 1);
         assert_eq!(audit.uncategorized_session_count, 1);
+        assert_eq!(
+            audit
+                .missing_title_by_app
+                .first()
+                .map(|row| (row.name.as_str(), row.count)),
+            Some(("Google Chrome (com.google.Chrome)", 1))
+        );
+        assert_eq!(
+            audit
+                .browser_missing_url_by_title
+                .first()
+                .map(|row| (row.name.as_str(), row.count)),
+            Some(("<missing title>", 1))
+        );
+        assert_eq!(
+            audit
+                .uncategorized_by_app
+                .first()
+                .map(|row| (row.name.as_str(), row.count)),
+            Some(("Google Chrome (com.google.Chrome)", 1))
+        );
         Ok(())
     }
 
