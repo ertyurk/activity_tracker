@@ -51,6 +51,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Maintain the SQLite `open_session` heartbeat so crash/restart recovery does not lose the active span.
 - Include the provisional open session in live query commands (`day`, `logs`, `query`, `summary`, `report`) when it overlaps the query.
 - Use app identity plus browser URL domains for categories; reclassify stored sessions when mappings change.
+- For browsers, collect active tab title and URL from the same AppleScript sample so rows do not mix different tab states.
 - For native apps, collect app identity and title fallback from the same foreground probe sample: window title first, then app title/name when macOS exposes no window.
 - Use `repair-titles` to backfill native app title gaps after title fallback changes; do not mask browser title misses with synthetic titles.
 - Preserve current session through short active-app probe misses; only create gaps after repeated misses.

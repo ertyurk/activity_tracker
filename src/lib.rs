@@ -1812,12 +1812,19 @@ pub trait ActivityProbe {
 pub struct MacOsProbe;
 
 pub const BROWSER_NEW_TAB_URL: &str = "about:newtab";
+const BROWSER_TAB_FIELD_SEPARATOR: &str = "__ACTIVITY_TRACKER_BROWSER_FIELD__";
 
 #[derive(Debug, Clone)]
 struct ActiveAppSnapshot {
     bundle_id: String,
     name: String,
     title: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct BrowserTabSnapshot {
+    title: Option<String>,
+    url: Option<String>,
 }
 
 impl ActivityProbe for MacOsProbe {
@@ -1831,8 +1838,9 @@ impl ActivityProbe for MacOsProbe {
             title: native_title,
         } = active_app;
         let (title, url) = if is_browser(&bundle_id) {
-            let title = browser_tab_title(&bundle_id);
-            let url = normalize_browser_tab_url(title.as_deref(), browser_tab_url(&bundle_id));
+            let browser_tab = browser_tab_snapshot(&bundle_id).unwrap_or_default();
+            let title = browser_tab.title;
+            let url = normalize_browser_tab_url(title.as_deref(), browser_tab.url);
             (title, url)
         } else {
             (
@@ -1975,52 +1983,70 @@ fn parse_active_app_snapshot(output: &str) -> Option<ActiveAppSnapshot> {
     })
 }
 
-pub fn browser_tab_url(bundle_id: &str) -> Option<String> {
+fn browser_tab_snapshot(bundle_id: &str) -> Option<BrowserTabSnapshot> {
     if !is_browser(bundle_id) {
         return None;
     }
 
+    let separator = escape_applescript_string(BROWSER_TAB_FIELD_SEPARATOR);
     let script = if bundle_id == "com.apple.Safari" {
-        r#"tell application id "com.apple.Safari" to get URL of current tab of front window"#
-            .to_string()
+        format!(
+            r#"tell application id "com.apple.Safari"
+set tabTitle to ""
+set tabUrl to ""
+try
+  set tabTitle to name of current tab of front window
+end try
+try
+  set tabUrl to URL of current tab of front window
+end try
+return tabTitle & "{}" & tabUrl
+end tell"#,
+            separator
+        )
     } else {
         format!(
-            r#"tell application id "{}" to get URL of active tab of front window"#,
-            escape_applescript_string(bundle_id)
+            r#"tell application id "{}"
+set tabTitle to ""
+set tabUrl to ""
+try
+  set tabTitle to title of active tab of front window
+end try
+try
+  set tabUrl to URL of active tab of front window
+end try
+return tabTitle & "{}" & tabUrl
+end tell"#,
+            escape_applescript_string(bundle_id),
+            separator
         )
     };
 
     match run_osascript(&script) {
-        Ok(url) => Some(url),
+        Ok(output) => Some(parse_browser_tab_snapshot(&output)),
         Err(error) => {
-            tracing::debug!(bundle_id, error = %error, "browser URL probe failed");
+            tracing::debug!(bundle_id, error = %error, "browser tab probe failed");
             None
         }
     }
 }
 
+fn parse_browser_tab_snapshot(output: &str) -> BrowserTabSnapshot {
+    let (title, url) = output
+        .split_once(BROWSER_TAB_FIELD_SEPARATOR)
+        .unwrap_or((output, ""));
+    BrowserTabSnapshot {
+        title: non_empty_borrowed(title).map(str::to_string),
+        url: non_empty_borrowed(url).map(str::to_string),
+    }
+}
+
+pub fn browser_tab_url(bundle_id: &str) -> Option<String> {
+    browser_tab_snapshot(bundle_id).and_then(|snapshot| snapshot.url)
+}
+
 pub fn browser_tab_title(bundle_id: &str) -> Option<String> {
-    if !is_browser(bundle_id) {
-        return None;
-    }
-
-    let script = if bundle_id == "com.apple.Safari" {
-        r#"tell application id "com.apple.Safari" to get name of current tab of front window"#
-            .to_string()
-    } else {
-        format!(
-            r#"tell application id "{}" to get title of active tab of front window"#,
-            escape_applescript_string(bundle_id)
-        )
-    };
-
-    match run_osascript(&script) {
-        Ok(title) => non_empty_string(title),
-        Err(error) => {
-            tracing::debug!(bundle_id, error = %error, "browser title probe failed");
-            None
-        }
-    }
+    browser_tab_snapshot(bundle_id).and_then(|snapshot| snapshot.title)
 }
 
 pub fn active_window_title() -> Option<String> {
@@ -2888,6 +2914,31 @@ mod tests {
         assert_eq!(snapshot.name, "cmux");
         assert_eq!(snapshot.title.as_deref(), Some("cmux"));
         Ok(())
+    }
+
+    #[test]
+    fn browser_tab_snapshot_parser_keeps_url_when_title_missing() {
+        let snapshot = parse_browser_tab_snapshot(&format!(
+            "{BROWSER_TAB_FIELD_SEPARATOR}https://github.com/ertyurk/activity_tracker"
+        ));
+
+        assert_eq!(snapshot.title, None);
+        assert_eq!(
+            snapshot.url.as_deref(),
+            Some("https://github.com/ertyurk/activity_tracker")
+        );
+    }
+
+    #[test]
+    fn browser_tab_snapshot_parser_keeps_title_when_url_missing() {
+        let snapshot = parse_browser_tab_snapshot(&format!("New Tab{BROWSER_TAB_FIELD_SEPARATOR}"));
+
+        assert_eq!(snapshot.title.as_deref(), Some("New Tab"));
+        assert_eq!(snapshot.url, None);
+        assert_eq!(
+            normalize_browser_tab_url(snapshot.title.as_deref(), snapshot.url),
+            Some(BROWSER_NEW_TAB_URL.to_string())
+        );
     }
 
     #[test]
