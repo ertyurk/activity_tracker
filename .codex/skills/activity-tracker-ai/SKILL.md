@@ -14,7 +14,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 1. Run `cargo run -- paths --json` to discover storage paths.
 2. Run `cargo run -- schema --json` when an app/tool harness needs the CLI/data contract.
 3. Use `cargo run -- now --json` for cheap current activity polling.
-4. Use `cargo run -- agent --json` as the first AI/reporting hook: readiness, `report_ready`, `action_required`, window-scoped quality score/status/scoped candidate repair commands, dry-run repair plan with actionable/residual item counts, warnings, window audit with bounded quality issue samples, today's audit/quality for background context, bounded summary, most recent timeline context, open checkpoint, and paths.
+4. Use `cargo run -- agent --json` as the first AI/reporting hook: readiness, storage verification, `report_ready`, `action_required`, repair plan with actionable/residual item counts, window-scoped quality score/status/scoped candidate repair commands, warnings, window audit with bounded quality issue samples, today's audit/quality for background context, bounded summary, most recent timeline context, open checkpoint, and paths.
 5. Use `cargo run -- agent --last-minutes N --json` for rolling auto-report windows, or `cargo run -- agent YYYY-MM-DD --json` for compact day context.
 6. Add `--include-sessions` to `agent` only when raw sessions are necessary.
 7. Use `cargo run -- health --json` before reports when you need the full launchd/storage health payload.
@@ -79,7 +79,8 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Keep `inventory --json` window-aware and backed by the same indexed query window; use it for filter menus instead of scanning raw history in callers.
 - Keep `schema --json` stable enough for SwiftUI/tool harness discovery; update it whenever commands, filters, agent fields, storage verification fields, session fields, defaults, or quality issue kinds change.
 - Keep `now --json` cheap and suitable for frequent SwiftUI/menu-bar polling.
-- Keep `agent --json` explicit about report readiness: `report_ready` should be true only when service/storage/window coverage are ready and no actionable repair remains; `action_required` should reflect actionable repairs, while residual non-repairable warnings stay visible in the repair plan and quality fields.
+- Keep `agent --json` explicit about report readiness: `report_ready` should be true only when service/freshness/storage verification/window coverage are ready and no actionable repair remains; `action_required` should reflect actionable repairs, while residual non-repairable warnings stay visible in the repair plan and quality fields.
+- If JSONL/CSV derived storage verification fails while SQLite is healthy, expose `activity_tracker repair-mirror --json` in `agent.repair_plan.actionable_commands`.
 - Use app identity plus browser URL domains for categories; reclassify stored sessions when mappings change.
 - Keep observed domain mappings current for recurring work tools, communication, AI, writing, research, and development sites.
 - For browsers, collect active tab title and URL from the same AppleScript sample so rows do not mix different tab states.

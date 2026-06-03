@@ -91,7 +91,7 @@ enum Command {
     Agent(AgentArgs),
     /// Check macOS permissions, probes, and writable storage.
     Doctor(OutputArgs),
-    /// Verify SQLite integrity and JSONL mirror readability.
+    /// Verify SQLite integrity plus JSONL and CSV derived storage.
     Verify(OutputArgs),
     /// Install, uninstall, or inspect launchd background service.
     Service(ServiceCommand),
@@ -1058,7 +1058,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     let now = Local::now();
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 4,
+            "schema_version": 5,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1154,6 +1154,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 {"name": "window", "type": "object", "required": true},
                 {"name": "health", "type": "object", "required": true},
                 {"name": "window_audit", "type": "object", "required": true},
+                {"name": "storage_verification", "type": "object", "required": true},
                 {"name": "today_audit", "type": "object", "required": true},
                 {"name": "today_quality", "type": "object", "required": true},
                 {"name": "today_warnings", "type": "array<string>", "required": true},
@@ -1230,7 +1231,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 4");
+        println!("schema_version: 5");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
@@ -1405,11 +1406,12 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
     let today = now.date_naive();
     let service = service_status_report();
     let storage = store.storage_health(now, DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS)?;
+    let storage_verification = store.verify_storage()?;
     let today_sessions =
         store.sessions_for_day_with_open(today, now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
     let today_audit = audit_sessions(&today_sessions, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS);
     let today_quality = agent_quality(&today_audit, AgentRepairWindow::Date(today));
-    let today_warnings = agent_warnings(&service, &storage, &today_audit);
+    let today_warnings = agent_warnings(&service, &storage, &storage_verification, &today_audit);
 
     let (
         window_mode,
@@ -1469,11 +1471,12 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
     } else {
         audit_sessions(&sessions, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS)
     };
-    let ready = agent_ready(&service, &storage, &window_audit);
-    let warnings = agent_warnings(&service, &storage, &window_audit);
+    let ready = agent_ready(&service, &storage, &storage_verification, &window_audit);
+    let warnings = agent_warnings(&service, &storage, &storage_verification, &window_audit);
     let quality = agent_quality(&window_audit, repair_window);
     let repair_plan = agent_repair_plan(
         store,
+        &storage_verification,
         &window_audit,
         window_start,
         window_end,
@@ -1520,6 +1523,7 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
                 "latest_observed_age_seconds": storage.latest_observed_age_seconds,
                 "session_count": storage.session_count,
             },
+            "storage_verification": storage_verification,
             "window_audit": window_audit,
             "today_audit": today_audit,
             "today_quality": today_quality,
@@ -1553,6 +1557,7 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
         println!("quality_status: {}", quality.status);
         println!("service_running: {}", yes_no(service.running));
         println!("fresh: {}", yes_no(storage.fresh));
+        println!("storage_verified: {}", yes_no(storage_verification.ok));
         println!("window: {window_mode}");
         if let Some(date) = window_date {
             println!("date: {date}");
@@ -1867,10 +1872,12 @@ enum AgentRepairWindow {
 fn agent_ready(
     service: &activity_tracker::ServiceStatusReport,
     storage: &activity_tracker::StorageHealth,
+    verification: &activity_tracker::StorageVerification,
     audit: &activity_tracker::ActivityAudit,
 ) -> bool {
     service.running
         && storage.fresh
+        && verification.ok
         && audit.gap_count == 0
         && audit.overlap_count == 0
         && audit.invalid_session_count == 0
@@ -1938,12 +1945,14 @@ fn agent_quality(
 
 fn agent_repair_plan(
     store: &LogStore,
+    verification: &activity_tracker::StorageVerification,
     audit: &activity_tracker::ActivityAudit,
     window_start: Option<chrono::DateTime<Local>>,
     window_end: Option<chrono::DateTime<Local>>,
     repair_window: AgentRepairWindow,
 ) -> Result<AgentRepairPlan> {
     let mut items = Vec::new();
+    items.extend(storage_verification_repair_items(verification));
 
     if audit.gap_count > 0 {
         let report = store.repair_gaps_in_window(
@@ -2047,6 +2056,61 @@ fn agent_repair_plan_item(
     }
 }
 
+fn storage_verification_repair_items(
+    verification: &activity_tracker::StorageVerification,
+) -> Vec<AgentRepairPlanItem> {
+    if verification.ok {
+        return Vec::new();
+    }
+
+    if storage_mirror_repairable(verification) {
+        return vec![AgentRepairPlanItem {
+            command: "activity_tracker repair-mirror --json".to_string(),
+            reason: "storage_mirror",
+            issue_count: storage_verification_issue_count(verification),
+            scanned: usize::try_from(verification.sqlite_session_count).unwrap_or(usize::MAX),
+            repairable_count: storage_verification_issue_count(verification),
+            actionable: true,
+        }];
+    }
+
+    vec![AgentRepairPlanItem {
+        command: "activity_tracker verify --json".to_string(),
+        reason: "storage_integrity",
+        issue_count: storage_verification_issue_count(verification),
+        scanned: usize::try_from(verification.sqlite_session_count).unwrap_or(usize::MAX),
+        repairable_count: 0,
+        actionable: false,
+    }]
+}
+
+fn storage_mirror_repairable(verification: &activity_tracker::StorageVerification) -> bool {
+    verification.sqlite_exists
+        && verification.sqlite_integrity_ok
+        && (!verification.jsonl_exists
+            || !verification.jsonl_readable
+            || !verification.mirror_in_sync
+            || !verification.csv_exists
+            || !verification.csv_readable
+            || !verification.csv_in_sync)
+}
+
+fn storage_verification_issue_count(verification: &activity_tracker::StorageVerification) -> usize {
+    [
+        !verification.sqlite_exists,
+        !verification.sqlite_integrity_ok,
+        !verification.jsonl_exists,
+        !verification.jsonl_readable,
+        !verification.mirror_in_sync,
+        !verification.csv_exists,
+        !verification.csv_readable,
+        !verification.csv_in_sync,
+    ]
+    .into_iter()
+    .filter(|issue| *issue)
+    .count()
+}
+
 fn agent_repair_command(command: &str, window: AgentRepairWindow) -> String {
     match window {
         AgentRepairWindow::Date(date) => {
@@ -2061,6 +2125,7 @@ fn agent_repair_command(command: &str, window: AgentRepairWindow) -> String {
 fn agent_warnings(
     service: &activity_tracker::ServiceStatusReport,
     storage: &activity_tracker::StorageHealth,
+    verification: &activity_tracker::StorageVerification,
     audit: &activity_tracker::ActivityAudit,
 ) -> Vec<String> {
     let mut warnings = Vec::new();
@@ -2069,6 +2134,18 @@ fn agent_warnings(
     }
     if !storage.fresh {
         warnings.push("storage_stale".to_string());
+    }
+    if !verification.ok {
+        warnings.push("storage_verification_failed".to_string());
+    }
+    if !verification.sqlite_integrity_ok {
+        warnings.push("sqlite_integrity_failed".to_string());
+    }
+    if !verification.mirror_in_sync {
+        warnings.push("jsonl_mirror_out_of_sync".to_string());
+    }
+    if !verification.csv_in_sync {
+        warnings.push("csv_view_out_of_sync".to_string());
     }
     if audit.gap_count > 0 {
         warnings.push(format!("gaps_detected:{}", audit.gap_count));
@@ -2350,6 +2427,60 @@ mod tests {
         }
     }
 
+    fn service_report(running: bool) -> activity_tracker::ServiceStatusReport {
+        activity_tracker::ServiceStatusReport {
+            label: activity_tracker::SERVICE_LABEL.to_string(),
+            loaded: running,
+            running,
+            pid: None,
+            program: None,
+            arguments: Vec::new(),
+            stdout_path: None,
+            stderr_path: None,
+            raw: None,
+            error: None,
+        }
+    }
+
+    fn storage_health(fresh: bool) -> activity_tracker::StorageHealth {
+        activity_tracker::StorageHealth {
+            session_count: 0,
+            last_completed_session: None,
+            open_session: None,
+            latest_observed_at: None,
+            latest_observed_age_seconds: None,
+            stale_threshold_seconds: DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS,
+            fresh,
+        }
+    }
+
+    fn storage_verification(ok: bool) -> activity_tracker::StorageVerification {
+        activity_tracker::StorageVerification {
+            ok,
+            sqlite_path: PathBuf::from("activity.db"),
+            sqlite_exists: true,
+            sqlite_integrity_ok: true,
+            sqlite_integrity_messages: vec!["ok".to_string()],
+            sqlite_session_count: 0,
+            jsonl_path: PathBuf::from("sessions.jsonl"),
+            jsonl_exists: true,
+            jsonl_readable: true,
+            jsonl_error: None,
+            jsonl_session_count: 0,
+            mirror_count_matches: ok,
+            mirror_content_matches: ok,
+            mirror_in_sync: ok,
+            csv_path: PathBuf::from("usage_stats.csv"),
+            csv_exists: true,
+            csv_readable: true,
+            csv_error: None,
+            csv_session_count: 0,
+            csv_count_matches: ok,
+            csv_content_matches: ok,
+            csv_in_sync: ok,
+        }
+    }
+
     struct FailingProbe;
 
     impl ActivityProbe for FailingProbe {
@@ -2455,6 +2586,34 @@ mod tests {
     }
 
     #[test]
+    fn agent_ready_requires_storage_verification() {
+        let audit = audit_with_counts(0, 0, 0, 0, 0, 0, 0);
+        let service = service_report(true);
+        let storage = storage_health(true);
+        let verified = storage_verification(true);
+        let broken = storage_verification(false);
+
+        assert!(agent_ready(&service, &storage, &verified, &audit));
+        assert!(!agent_ready(&service, &storage, &broken, &audit));
+    }
+
+    #[test]
+    fn agent_warnings_report_broken_storage_views() {
+        let audit = audit_with_counts(0, 0, 0, 0, 0, 0, 0);
+        let service = service_report(true);
+        let storage = storage_health(true);
+        let mut verification = storage_verification(false);
+        verification.csv_in_sync = false;
+        verification.mirror_in_sync = false;
+
+        let warnings = agent_warnings(&service, &storage, &verification, &audit);
+
+        assert!(warnings.contains(&"storage_verification_failed".to_string()));
+        assert!(warnings.contains(&"jsonl_mirror_out_of_sync".to_string()));
+        assert!(warnings.contains(&"csv_view_out_of_sync".to_string()));
+    }
+
+    #[test]
     fn tail_file_lines_returns_bounded_tail() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("launchd.out.log");
@@ -2494,9 +2653,11 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("missing session"))?;
         let (window_start, window_end) = day_bounds(date)?;
         store.append_session(&session)?;
+        let verification = store.verify_storage()?;
 
         let plan = agent_repair_plan(
             &store,
+            &verification,
             &audit_with_counts(0, 0, 0, 0, 0, 0, 1),
             Some(window_start),
             Some(window_end),
@@ -2546,9 +2707,11 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("missing session"))?;
         let (window_start, window_end) = day_bounds(date)?;
         store.append_session(&session)?;
+        let verification = store.verify_storage()?;
 
         let plan = agent_repair_plan(
             &store,
+            &verification,
             &audit_with_counts(0, 0, 0, 1, 0, 0, 0),
             Some(window_start),
             Some(window_end),
@@ -2560,6 +2723,55 @@ mod tests {
         assert_eq!(plan.actionable_item_count, 0);
         assert_eq!(plan.residual_item_count, 2);
         assert_eq!(plan.items.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn agent_repair_plan_marks_broken_storage_mirror_actionable() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let end = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing end"))?;
+        let entity = activity_tracker::ActiveEntity {
+            bundle_id: "company.thebrowser.dia".to_string(),
+            name: "Dia".to_string(),
+            title: Some("Repo".to_string()),
+            url: Some("https://github.com/owner/repo".to_string()),
+            category: "Development".to_string(),
+            activity_type: activity_tracker::ActivityType::Active,
+        };
+        let session = UsageSession::from_entity(&entity, start, end)
+            .ok_or_else(|| anyhow::anyhow!("missing session"))?;
+        store.append_session(&session)?;
+        write_jsonl(&store.sessions_path(), &[])?;
+        let verification = store.verify_storage()?;
+
+        let plan = agent_repair_plan(
+            &store,
+            &verification,
+            &audit_with_counts(0, 0, 0, 0, 0, 0, 0),
+            None,
+            None,
+            AgentRepairWindow::LastMinutes(120),
+        )?;
+
+        assert_eq!(
+            plan.actionable_commands,
+            vec!["activity_tracker repair-mirror --json"]
+        );
+        assert!(plan.has_actionable_repairs);
+        assert_eq!(plan.actionable_item_count, 1);
+        assert_eq!(plan.residual_item_count, 0);
+        assert_eq!(
+            plan.items.first().map(|item| item.reason),
+            Some("storage_mirror")
+        );
         Ok(())
     }
 }

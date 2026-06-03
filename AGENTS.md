@@ -35,7 +35,8 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - Keep window-scoped quality issue samples in `agent --json`; compact today-wide audit samples to keep payload bounded.
 - Keep `agent` repair commands scoped to the same audited window, and keep `reclassify`/repair commands window-aware so agents do not mutate all history for a narrow report.
 - Use `agent.repair_plan.actionable_commands` for automated fixes; `agent.quality.repair_commands` are candidates and may explain non-repairable quality warnings.
-- `agent --json` should expose `report_ready`/`action_required` and distinguish actionable repairs from residual non-repairable warnings so reporting agents do not guess.
+- `agent --json` should expose `report_ready`/`action_required`, include storage verification, require clean storage verification for report readiness, and distinguish actionable repairs from residual non-repairable warnings so reporting agents do not guess.
+- If JSONL/CSV derived storage verification fails while SQLite is healthy, `agent.repair_plan.actionable_commands` should include `activity_tracker repair-mirror --json`.
 - Tolerate brief active-app probe misses; do not turn transient macOS/AppleScript failures into fake gaps.
 - Tracker startup should tolerate initial active-app or idle probe failures and begin with no active entity instead of exiting.
 - Audit should expose suspicious browser title/URL mismatches so old mixed-context rows are visible to agents.
