@@ -40,7 +40,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 ## Operations
 
 - Health check: `cargo run -- doctor --json`
-- Service substrate health: `cargo run -- health --json`
+- Service substrate health plus storage verification: `cargo run -- health --json`
 - Storage verification: `cargo run -- verify --json`
 - Storage mirror repair: `cargo run -- repair-mirror --json`
 - CLI/data contract: `cargo run -- schema --json`
@@ -76,6 +76,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Keep windowed summaries and timelines clipped to requested day/range/last-minutes bounds; raw session arrays can retain original persisted start/end for audit/debug context.
 - Treat uncovered leading/trailing spans inside rolling `agent --last-minutes` windows as coverage gaps so auto reports know when their requested interval is only partially observed.
 - Use windowed `audit` for exact report-window quality checks before calling repairs.
+- Keep `health --json` gated on full storage verification so agents do not call a broken mirror/CSV setup healthy.
 - Keep `inventory --json` window-aware and backed by the same indexed query window; use it for filter menus instead of scanning raw history in callers.
 - Keep `schema --json` stable enough for SwiftUI/tool harness discovery; update it whenever commands, filters, agent fields, storage verification fields, session fields, defaults, or quality issue kinds change.
 - Keep `now --json` cheap and suitable for frequent SwiftUI/menu-bar polling.

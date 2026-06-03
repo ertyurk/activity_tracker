@@ -1147,7 +1147,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     let now = Local::now();
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 9,
+            "schema_version": 10,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1238,6 +1238,18 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "csv_count_matches",
                 "csv_content_matches",
                 "csv_in_sync",
+            ],
+            "health_fields": [
+                "generated_at",
+                "date",
+                "healthy",
+                "fresh",
+                "service",
+                "storage",
+                "storage_verification",
+                "today_audit",
+                "gap_threshold_seconds",
+                "paths",
             ],
             "doctor_fields": [
                 "generated_at",
@@ -1350,7 +1362,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 9");
+        println!("schema_version: 10");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
@@ -1441,7 +1453,8 @@ fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
         store.sessions_for_day_with_open(date, now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
     let audit = audit_sessions(&sessions, args.gap_threshold_seconds);
     let service = service_status_report();
-    let healthy = storage.fresh && service.running;
+    let storage_verification = store.verify_storage()?;
+    let healthy = health_ready(&service, &storage, &storage_verification);
 
     if args.json {
         let today_audit = compact_audit(audit.clone());
@@ -1452,6 +1465,7 @@ fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
             "fresh": storage.fresh,
             "service": service,
             "storage": storage,
+            "storage_verification": storage_verification,
             "today_audit": today_audit,
             "gap_threshold_seconds": args.gap_threshold_seconds.max(0.0),
             "paths": {
@@ -1468,6 +1482,7 @@ fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
         println!("healthy: {}", yes_no(healthy));
         println!("fresh: {}", yes_no(storage.fresh));
         println!("service_running: {}", yes_no(service.running));
+        println!("storage_verified: {}", yes_no(storage_verification.ok));
         if let Some(pid) = service.pid {
             println!("service_pid: {pid}");
         }
@@ -1512,6 +1527,14 @@ fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
         print_quality_rows("today_uncategorized_by_app", &audit.uncategorized_by_app);
         Ok(())
     }
+}
+
+fn health_ready(
+    service: &activity_tracker::ServiceStatusReport,
+    storage: &activity_tracker::StorageHealth,
+    verification: &activity_tracker::StorageVerification,
+) -> bool {
+    service.running && storage.fresh && verification.ok
 }
 
 fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
@@ -2989,6 +3012,19 @@ mod tests {
 
         assert!(agent_ready(&service, &storage, &verified, &audit));
         assert!(!agent_ready(&service, &storage, &broken, &audit));
+    }
+
+    #[test]
+    fn health_ready_requires_storage_verification() {
+        let service = service_report(true);
+        let storage = storage_health(true);
+        let verified = storage_verification(true);
+        let broken = storage_verification(false);
+
+        assert!(health_ready(&service, &storage, &verified));
+        assert!(!health_ready(&service, &storage, &broken));
+        assert!(!health_ready(&service_report(false), &storage, &verified));
+        assert!(!health_ready(&service, &storage_health(false), &verified));
     }
 
     #[test]

@@ -31,6 +31,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - `schema --json` should expose CLI/data-contract capabilities, including agent output and storage verification fields, for SwiftUI and tool harness setup.
 - `now --json` should remain a cheap current-activity poll for SwiftUI/menu-bar clients.
 - `verify --json` should prove SQLite integrity plus JSONL and default CSV readability/count/content sync.
+- `health --json` should include storage verification and require it for `healthy`.
 - `repair-mirror --json` should rebuild JSONL mirror and CSV view from SQLite source of truth when verification fails.
 - Keep window-scoped quality issue samples in `agent --json`; compact today-wide audit samples to keep payload bounded.
 - Keep `agent` repair commands scoped to the same audited window, and keep `reclassify`/repair commands window-aware so agents do not mutate all history for a narrow report.
