@@ -1,424 +1,481 @@
-use chrono::{DateTime, Local};
-use csv::Writer;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::env;
-use std::fs;
+use std::io::{self, Write};
 use std::path::PathBuf;
-use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-struct ActiveEntity {
-    bundle_id: String,
-    name: String,
-    url: Option<String>,
-    category: Option<String>, // New field for categorizing apps
+use activity_tracker::{
+    ActivityProbe, DEFAULT_INTERVAL_SECONDS, LogStore, MacOsProbe, Result, TrackerError,
+    UsageSession, filter_sessions, format_seconds, install_launch_agent, parse_date,
+    service_status, summarize_all, summarize_day, uninstall_launch_agent,
+};
+use chrono::{Local, NaiveDate};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use tracing_subscriber::EnvFilter;
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "activity_tracker",
+    version,
+    about = "Local macOS activity tracker"
+)]
+struct Cli {
+    #[arg(long, global = true, value_name = "DIR")]
+    data_dir: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct UsageSession {
-    #[serde(rename = "Start Time")]
-    start_time: DateTime<Local>,
-    #[serde(rename = "End Time")]
-    end_time: DateTime<Local>,
-    #[serde(rename = "Duration (seconds)")]
-    duration_seconds: f64,
-    #[serde(rename = "App Name")]
-    app_name: String,
-    #[serde(rename = "Bundle ID")]
-    bundle_id: String,
-    #[serde(rename = "Category")]
-    category: String,
-    #[serde(rename = "URL")]
-    url: String,
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Run foreground tracker loop. Omit subcommand to do this.
+    Track(TrackArgs),
+    /// Print one-day summary. Defaults to today.
+    Day(DayArgs),
+    /// Print raw sessions. Defaults to today.
+    Logs(LogsArgs),
+    /// Print all-time summary.
+    Summary(OutputArgs),
+    /// Export sessions to CSV or JSONL.
+    Export(ExportArgs),
+    /// Print storage and service paths.
+    Paths(OutputArgs),
+    /// Check macOS permissions, probes, and writable storage.
+    Doctor(OutputArgs),
+    /// Install, uninstall, or inspect launchd background service.
+    Service(ServiceCommand),
 }
 
-impl UsageSession {
-    fn from_entity(
-        entity: &ActiveEntity,
-        start: DateTime<Local>,
-        end: DateTime<Local>,
-        duration: Duration,
-    ) -> Self {
-        Self {
-            start_time: start,
-            end_time: end,
-            duration_seconds: duration.as_secs_f64(),
-            app_name: entity.name.clone(),
-            bundle_id: entity.bundle_id.clone(),
-            category: entity
-                .category
-                .clone()
-                .unwrap_or_else(|| "Uncategorized".to_string()),
-            url: entity.url.clone().unwrap_or_else(|| "".to_string()),
+#[derive(Debug, Args, Default)]
+struct TrackArgs {
+    #[arg(long, default_value_t = DEFAULT_INTERVAL_SECONDS)]
+    interval_seconds: u64,
+    #[arg(long)]
+    quiet: bool,
+}
+
+#[derive(Debug, Args)]
+struct DayArgs {
+    date: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct LogsArgs {
+    date: Option<String>,
+    #[arg(long)]
+    app: Option<String>,
+    #[arg(long)]
+    category: Option<String>,
+    #[arg(long)]
+    domain: Option<String>,
+    #[arg(long)]
+    limit: Option<usize>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct OutputArgs {
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct ExportArgs {
+    #[arg(long)]
+    date: Option<String>,
+    #[arg(long, value_enum, default_value_t = ExportFormat::Csv)]
+    format: ExportFormat,
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ExportFormat {
+    Csv,
+    Jsonl,
+}
+
+#[derive(Debug, Args)]
+struct ServiceCommand {
+    #[command(subcommand)]
+    action: ServiceAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum ServiceAction {
+    /// Write LaunchAgent plist and load tracker now.
+    Install(ServiceInstallArgs),
+    /// Stop launchd service and remove plist.
+    Uninstall,
+    /// Print launchd service state.
+    Status,
+}
+
+#[derive(Debug, Args)]
+struct ServiceInstallArgs {
+    #[arg(long)]
+    bin: Option<PathBuf>,
+    #[arg(long)]
+    no_load: bool,
+}
+
+fn main() -> ExitCode {
+    init_tracing();
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
         }
     }
 }
 
-#[derive(Debug)]
-struct UsageStats {
-    sessions: Vec<UsageSession>,
-    total_duration: Duration,
-    last_updated: DateTime<Local>,
-}
-
-impl UsageStats {
-    fn new() -> Self {
-        Self {
-            sessions: Vec::new(),
-            total_duration: Duration::ZERO,
-            last_updated: Local::now(),
-        }
-    }
-
-    fn add_session(
-        &mut self,
-        entity: &ActiveEntity,
-        start_time: DateTime<Local>,
-        end_time: DateTime<Local>,
-        duration: Duration,
-    ) {
-        self.sessions.push(UsageSession::from_entity(
-            entity, start_time, end_time, duration,
-        ));
-        self.total_duration += duration;
-        self.last_updated = Local::now();
-    }
-
-    fn save_to_file(&self, path: &PathBuf) -> Result<(), String> {
-        let mut wtr =
-            Writer::from_path(path).map_err(|e| format!("Failed to create CSV file: {}", e))?;
-
-        // Write header
-        wtr.write_record(&[
-            "Start Time",
-            "End Time",
-            "Duration (seconds)",
-            "App Name",
-            "Bundle ID",
-            "Category",
-            "URL",
-        ])
-        .map_err(|e| format!("Failed to write CSV header: {}", e))?;
-
-        // Write each session
-        for session in &self.sessions {
-            wtr.serialize(session)
-                .map_err(|e| format!("Failed to write session to CSV: {}", e))?;
-        }
-
-        wtr.flush()
-            .map_err(|e| format!("Failed to flush CSV file: {}", e))?;
-
-        Ok(())
-    }
-
-    fn load_from_file(path: &PathBuf) -> Result<Self, String> {
-        if !path.exists() {
-            return Ok(Self::new());
-        }
-
-        let mut rdr =
-            csv::Reader::from_path(path).map_err(|e| format!("Failed to read CSV file: {}", e))?;
-
-        let mut stats = Self::new();
-        let mut total_duration = Duration::ZERO;
-
-        for result in rdr.deserialize() {
-            let session: UsageSession =
-                result.map_err(|e| format!("Failed to parse CSV record: {}", e))?;
-
-            total_duration += Duration::from_secs_f64(session.duration_seconds);
-            stats.sessions.push(session);
-        }
-
-        stats.total_duration = total_duration;
-        stats.last_updated = Local::now();
-        Ok(stats)
-    }
-}
-
-fn run_osascript(script: &str) -> Result<String, String> {
-    let output = Command::new("osascript").arg("-e").arg(script).output();
-
-    match output {
-        Ok(out) => {
-            if out.status.success() {
-                let stdout = String::from_utf8(out.stdout)
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
-                if stdout == "missing value" || stdout.is_empty() {
-                    Err("AppleScript returned missing value or empty string".to_string())
-                } else {
-                    Ok(stdout)
-                }
-            } else {
-                let stderr = String::from_utf8(out.stderr).unwrap_or_default();
-                Err(format!("osascript error: {}", stderr))
-            }
-        }
-        Err(e) => Err(format!("Failed to execute osascript: {}", e)),
-    }
-}
-
-fn get_active_app_info() -> Option<(String, String)> {
-    // (bundle_id, name)
-    let script_bundle_id = r#"tell application "System Events" to get bundle identifier of first process whose frontmost is true"#;
-    let script_name =
-        r#"tell application "System Events" to get name of first process whose frontmost is true"#;
-
-    match (run_osascript(script_bundle_id), run_osascript(script_name)) {
-        (Ok(bundle_id), Ok(name)) => Some((bundle_id, name)),
-        (Err(e_bundle), _) => {
-            // Only log errors if they're not empty and not during shutdown
-            if !e_bundle.is_empty() && !e_bundle.contains("execution of AppleScript failed") {
-                eprintln!("Error getting bundle_id: {}", e_bundle);
-            }
-            None
-        }
-        (_, Err(e_name)) => {
-            if !e_name.is_empty() && !e_name.contains("execution of AppleScript failed") {
-                eprintln!("Error getting name: {}", e_name);
-            }
-            None
-        }
-    }
-}
-
-fn get_browser_tab_url(bundle_id: &str) -> Option<String> {
-    let script = match bundle_id {
-        "company.thebrowser.dia"
-        | "com.google.Chrome"
-        | "com.google.Chrome.canary"
-        | "com.brave.Browser" => {
-            r#"tell application id "com.google.Chrome" to get URL of active tab of front window"#
-        }
-        "com.apple.Safari" => {
-            r#"tell application "Safari" to get URL of current tab of front window"#
-        }
-        "com.microsoft.edgemac" => {
-            // Added Edge explicitly
-            r#"tell application id "com.microsoft.edgemac" to get URL of active tab of front window"#
-        }
-        _ => return None,
+fn run() -> Result<()> {
+    let cli = Cli::parse();
+    let store = match cli.data_dir {
+        Some(path) => LogStore::new(path),
+        None => LogStore::from_env()?,
     };
 
-    let mut result = run_osascript(script);
-    if result.is_err() && bundle_id == "com.brave.Browser" {
-        // Specific fallback for Brave if generic Chrome ID fails
-        let brave_script =
-            r#"tell application id "com.brave.Browser" to get URL of active tab of front window"#;
-        result = run_osascript(brave_script);
-    }
-
-    match result {
-        Ok(url) => Some(url),
-        Err(e) => {
-            if !e.contains("missing value")
-                && !e.contains("Can't get window 1")
-                && !e.contains("Can't get current tab of window 1")
-            {
-                eprintln!("Error getting URL for {}: {}", bundle_id, e);
-            }
-            None
-        }
+    match cli.command.unwrap_or(Command::Track(TrackArgs::default())) {
+        Command::Track(args) => run_tracker(&store, args),
+        Command::Day(args) => print_day(&store, args),
+        Command::Logs(args) => print_logs(&store, args),
+        Command::Summary(args) => print_summary(&store, args),
+        Command::Export(args) => export_sessions(&store, args),
+        Command::Paths(args) => print_paths(&store, args),
+        Command::Doctor(args) => doctor(&store, args),
+        Command::Service(command) => run_service(&store, command),
     }
 }
 
-fn get_app_category(bundle_id: &str, name: &str) -> Option<String> {
-    // Simple categorization logic - can be expanded
-    match bundle_id {
-        "com.google.Chrome"
-        | "com.google.Chrome.canary"
-        | "com.apple.Safari"
-        | "com.brave.Browser"
-        | "com.microsoft.edgemac" => Some("Browser".to_string()),
-        "com.apple.Terminal" | "com.apple.iTerm2" => Some("Terminal".to_string()),
-        "com.apple.mail" | "com.microsoft.Outlook" => Some("Email".to_string()),
-        "com.apple.Slack" | "com.microsoft.Teams" => Some("Communication".to_string()),
-        "com.apple.Notes" | "com.apple.TextEdit" => Some("Productivity".to_string()),
-        _ => None,
-    }
-}
-
-fn get_desktop_path() -> Result<PathBuf, String> {
-    let home = env::var("HOME").map_err(|_| "Could not find HOME directory".to_string())?;
-
-    let desktop = PathBuf::from(home).join("Desktop");
-    if !desktop.exists() {
-        return Err("Desktop directory not found".to_string());
-    }
-
-    Ok(desktop)
-}
-
-fn main() {
-    let desktop_path = match get_desktop_path() {
-        Ok(path) => path,
-        Err(e) => {
-            eprintln!("Error: {}. Using current directory instead.", e);
-            PathBuf::from(".")
-        }
-    };
-
-    let stats_file = desktop_path.join("usage_stats.csv");
-    let mut usage_stats = UsageStats::load_from_file(&stats_file).unwrap_or_else(|e| {
-        eprintln!("Warning: Could not load existing stats: {}", e);
-        UsageStats::new()
-    });
-
-    let mut current_entity: Option<ActiveEntity> = None;
-    let mut last_check_time = Instant::now();
-    let mut session_start_time = Local::now();
-    let mut is_shutting_down = false;
-
+fn run_tracker(store: &LogStore, args: TrackArgs) -> Result<()> {
     let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-
+    let signal = Arc::clone(&running);
     ctrlc::set_handler(move || {
-        r.store(false, Ordering::SeqCst);
-        println!("\nShutting down gracefully...");
+        signal.store(false, Ordering::SeqCst);
     })
-    .expect("Error setting Ctrl-C handler");
+    .map_err(|error| TrackerError::CtrlC(error.to_string()))?;
 
-    println!("Starting app tracker... Press Ctrl+C to stop and show summary.");
+    store.ensure_dirs()?;
+    let probe = MacOsProbe;
+    let interval = Duration::from_secs(args.interval_seconds.max(1));
+    let mut current_entity = probe.active_entity()?;
+    let mut session_start = Local::now();
+
+    if !args.quiet {
+        println!("tracking -> {}", store.sessions_path().display());
+    }
 
     while running.load(Ordering::SeqCst) {
-        let new_entity_info = get_active_app_info();
-        let mut new_active_entity: Option<ActiveEntity> = None;
-
-        if let Some((bundle_id, name)) = new_entity_info {
-            let mut url: Option<String> = None;
-            match bundle_id.as_str() {
-                "com.google.Chrome"
-                | "com.google.Chrome.canary"
-                | "com.apple.Safari"
-                | "com.brave.Browser"
-                | "com.microsoft.edgemac" => {
-                    url = get_browser_tab_url(&bundle_id);
-                }
-                _ => {}
+        thread::sleep(interval);
+        let next_entity = match probe.active_entity() {
+            Ok(entity) => entity,
+            Err(error) => {
+                tracing::warn!(error = %error, "probe failed");
+                None
             }
+        };
+        let now = Local::now();
 
-            let category = get_app_category(&bundle_id, &name);
-            new_active_entity = Some(ActiveEntity {
-                bundle_id,
-                name,
-                url,
-                category,
-            });
-        }
-
-        let loop_instant = Instant::now();
-        let elapsed_since_last_check = loop_instant.duration_since(last_check_time);
-
-        if current_entity != new_active_entity {
-            // Switched app/URL
-            if let Some(ref entity) = current_entity {
-                let session_end_time = Local::now();
-                usage_stats.add_session(
-                    entity,
-                    session_start_time,
-                    session_end_time,
-                    elapsed_since_last_check,
-                );
-                if !is_shutting_down {
-                    println!(
-                        "Switched from: {:?} (spent: {:.2?})",
-                        entity, elapsed_since_last_check
-                    );
-                }
-            }
-
-            current_entity = new_active_entity;
-            session_start_time = Local::now();
-
-            if let Some(ref entity) = current_entity {
-                if !is_shutting_down {
-                    println!("Started tracking: {:?}", entity);
-                }
+        if next_entity != current_entity {
+            persist_session(
+                store,
+                current_entity.as_ref(),
+                session_start,
+                now,
+                args.quiet,
+            )?;
+            current_entity = next_entity;
+            session_start = now;
+            if !args.quiet
+                && let Some(entity) = current_entity.as_ref()
+            {
+                println!("active -> {} [{}]", entity.name, entity.category);
             }
         }
-
-        last_check_time = loop_instant;
-        thread::sleep(Duration::from_secs(2));
     }
 
-    // Mark as shutting down to suppress unnecessary output
-    is_shutting_down = true;
+    persist_session(
+        store,
+        current_entity.as_ref(),
+        session_start,
+        Local::now(),
+        args.quiet,
+    )?;
+    store.refresh_default_csv()?;
+    if !args.quiet {
+        println!("stopped");
+    }
+    Ok(())
+}
 
-    // Save final session if there is one
-    if let Some(ref entity) = current_entity {
-        let final_exit_time = Local::now();
-        let duration_spent_on_last_entity =
-            final_exit_time.signed_duration_since(session_start_time);
-        usage_stats.add_session(
-            entity,
-            session_start_time,
-            final_exit_time,
-            Duration::from_secs(duration_spent_on_last_entity.num_seconds() as u64),
+fn persist_session(
+    store: &LogStore,
+    entity: Option<&activity_tracker::ActiveEntity>,
+    start: chrono::DateTime<Local>,
+    end: chrono::DateTime<Local>,
+    quiet: bool,
+) -> Result<()> {
+    let Some(entity) = entity else {
+        return Ok(());
+    };
+    let Some(session) = UsageSession::from_entity(entity, start, end) else {
+        return Ok(());
+    };
+    store.append_session(&session)?;
+    if !quiet {
+        println!(
+            "saved -> {} {}",
+            session.app_name,
+            format_seconds(session.duration_seconds)
         );
     }
+    Ok(())
+}
 
-    // Save stats to file
-    if let Err(e) = usage_stats.save_to_file(&stats_file) {
-        eprintln!("Warning: Failed to save usage stats: {}", e);
+fn print_day(store: &LogStore, args: DayArgs) -> Result<()> {
+    let date = date_or_today(args.date.as_deref())?;
+    let sessions = store.sessions_for_day(date)?;
+    let summary = summarize_day(&sessions, date)?;
+    if args.json {
+        print_json(&summary)
+    } else {
+        print_summary_text(Some(date), &summary);
+        Ok(())
     }
+}
 
-    // Print summary
-    println!("\n=== Usage Summary ===");
+fn print_logs(store: &LogStore, args: LogsArgs) -> Result<()> {
+    let date = date_or_today(args.date.as_deref())?;
+    let sessions = store.sessions_for_day(date)?;
+    let sessions = filter_sessions(
+        sessions,
+        args.app.as_deref(),
+        args.category.as_deref(),
+        args.domain.as_deref(),
+        args.limit,
+    );
 
-    // Group by category
-    let mut category_stats: HashMap<String, Duration> = HashMap::new();
-    let mut app_stats: HashMap<ActiveEntity, Duration> = HashMap::new();
-
-    for session in &usage_stats.sessions {
-        let category = session.category.clone();
-        *category_stats
-            .entry(category.clone())
-            .or_insert(Duration::ZERO) += Duration::from_secs_f64(session.duration_seconds);
-        *app_stats
-            .entry(ActiveEntity {
-                bundle_id: session.bundle_id.clone(),
-                name: session.app_name.clone(),
-                url: None,
-                category: Some(category),
-            })
-            .or_insert(Duration::ZERO) += Duration::from_secs_f64(session.duration_seconds);
-    }
-
-    println!("\nBy Category:");
-    let mut sorted_categories: Vec<_> = category_stats.into_iter().collect();
-    sorted_categories.sort_by(|a, b| b.1.cmp(&a.1));
-
-    for (category, duration) in sorted_categories {
-        let percentage =
-            (duration.as_secs_f64() / usage_stats.total_duration.as_secs_f64()) * 100.0;
-        println!("{}: {:.2?} ({:.1}%)", category, duration, percentage);
-    }
-
-    println!("\nBy Application:");
-    let mut sorted_apps: Vec<_> = app_stats.into_iter().collect();
-    sorted_apps.sort_by(|a, b| b.1.cmp(&a.1));
-
-    for (entity, duration) in sorted_apps {
-        let percentage =
-            (duration.as_secs_f64() / usage_stats.total_duration.as_secs_f64()) * 100.0;
-        println!("\nApp: {} ({})", entity.name, entity.bundle_id);
-        if let Some(url) = entity.url {
-            println!("  URL: {}", url);
+    if args.json {
+        print_json(&sessions)
+    } else {
+        for session in sessions {
+            let url = session.url.unwrap_or_default();
+            println!(
+                "{} -> {} | {} | {} | {} | {}",
+                session.start_time.format("%H:%M:%S"),
+                session.end_time.format("%H:%M:%S"),
+                format_seconds(session.duration_seconds),
+                session.category,
+                session.app_name,
+                url
+            );
         }
-        if let Some(category) = entity.category {
-            println!("  Category: {}", category);
-        }
-        println!("  Total Time: {:.2?} ({:.1}%)", duration, percentage);
+        Ok(())
+    }
+}
+
+fn print_summary(store: &LogStore, args: OutputArgs) -> Result<()> {
+    let sessions = store.load_sessions()?;
+    let summary = summarize_all(&sessions);
+    if args.json {
+        print_json(&summary)
+    } else {
+        print_summary_text(None, &summary);
+        Ok(())
+    }
+}
+
+fn export_sessions(store: &LogStore, args: ExportArgs) -> Result<()> {
+    let sessions = match args.date.as_deref() {
+        Some(date) => store.sessions_for_day(parse_date(date)?)?,
+        None => store.load_sessions()?,
+    };
+
+    let output = match args.output {
+        Some(path) => path,
+        None => default_export_path(store, args.date.as_deref(), args.format)?,
+    };
+
+    match args.format {
+        ExportFormat::Csv => store.write_csv(&output, &sessions)?,
+        ExportFormat::Jsonl => write_jsonl(&output, &sessions)?,
     }
 
-    println!("\nTotal tracked time: {:.2?}", usage_stats.total_duration);
-    println!("Stats saved to: {}", stats_file.display());
+    println!("{}", output.display());
+    Ok(())
+}
+
+fn print_paths(store: &LogStore, args: OutputArgs) -> Result<()> {
+    if args.json {
+        let value = serde_json::json!({
+            "root": store.root(),
+            "sessions_jsonl": store.sessions_path(),
+            "csv": store.csv_path(),
+            "exports": store.exports_dir(),
+            "logs": store.logs_dir(),
+        });
+        print_json(&value)
+    } else {
+        println!("root: {}", store.root().display());
+        println!("sessions_jsonl: {}", store.sessions_path().display());
+        println!("csv: {}", store.csv_path().display());
+        println!("exports: {}", store.exports_dir().display());
+        println!("logs: {}", store.logs_dir().display());
+        Ok(())
+    }
+}
+
+fn doctor(store: &LogStore, args: OutputArgs) -> Result<()> {
+    store.ensure_dirs()?;
+    let probe = MacOsProbe;
+    let active = probe.active_entity()?;
+    let osascript = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg("return \"ok\"")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+
+    if args.json {
+        let value = serde_json::json!({
+            "data_dir_writable": true,
+            "osascript": osascript,
+            "active_entity": active,
+            "sessions_path": store.sessions_path(),
+        });
+        print_json(&value)
+    } else {
+        println!("data_dir_writable: yes");
+        println!("osascript: {}", yes_no(osascript));
+        if let Some(entity) = active {
+            println!(
+                "active_entity: {} | {} | {}",
+                entity.name, entity.bundle_id, entity.category
+            );
+        } else {
+            println!("active_entity: unavailable");
+            println!("hint: grant Accessibility permission to terminal/app running tracker");
+        }
+        Ok(())
+    }
+}
+
+fn run_service(store: &LogStore, command: ServiceCommand) -> Result<()> {
+    match command.action {
+        ServiceAction::Install(args) => {
+            let binary = match args.bin {
+                Some(path) => path,
+                None => std::env::current_exe()?,
+            };
+            let plist = install_launch_agent(&binary, store, !args.no_load)?;
+            println!("{}", plist.display());
+            Ok(())
+        }
+        ServiceAction::Uninstall => {
+            let plist = uninstall_launch_agent(true)?;
+            println!("{}", plist.display());
+            Ok(())
+        }
+        ServiceAction::Status => {
+            print!("{}", service_status()?);
+            io::stdout().flush()?;
+            Ok(())
+        }
+    }
+}
+
+fn print_summary_text(date: Option<NaiveDate>, summary: &activity_tracker::ActivitySummary) {
+    if let Some(date) = date {
+        println!("date: {date}");
+    } else {
+        println!("date: all");
+    }
+    println!("sessions: {}", summary.session_count);
+    println!(
+        "total: {} ({:.1}s)",
+        format_seconds(summary.total_seconds),
+        summary.total_seconds
+    );
+    print_rows("by_category", &summary.by_category);
+    print_rows("by_app", &summary.by_app);
+    print_rows("by_domain", &summary.by_domain);
+}
+
+fn print_rows(label: &str, rows: &[activity_tracker::SummaryRow]) {
+    if rows.is_empty() {
+        return;
+    }
+    println!("{label}:");
+    for row in rows {
+        println!(
+            "  {} | {} | {:.1}%",
+            row.name,
+            format_seconds(row.seconds),
+            row.percentage
+        );
+    }
+}
+
+fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    serde_json::to_writer_pretty(&mut handle, value)?;
+    writeln!(handle)?;
+    Ok(())
+}
+
+fn write_jsonl(path: &PathBuf, sessions: &[UsageSession]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::File::create(path)?;
+    for session in sessions {
+        serde_json::to_writer(&mut file, session)?;
+        file.write_all(b"\n")?;
+    }
+    file.flush()?;
+    Ok(())
+}
+
+fn date_or_today(input: Option<&str>) -> Result<NaiveDate> {
+    input.map_or_else(|| Ok(Local::now().date_naive()), parse_date)
+}
+
+fn default_export_path(
+    store: &LogStore,
+    date: Option<&str>,
+    format: ExportFormat,
+) -> Result<PathBuf> {
+    let stem = match date {
+        Some(value) => value.to_string(),
+        None => "all".to_string(),
+    };
+    let extension = match format {
+        ExportFormat::Csv => "csv",
+        ExportFormat::Jsonl => "jsonl",
+    };
+    store.ensure_dirs()?;
+    Ok(store.exports_dir().join(format!("{stem}.{extension}")))
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("activity_tracker=warn"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .compact()
+        .init();
 }

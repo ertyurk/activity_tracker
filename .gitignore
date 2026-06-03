@@ -1,1 +1,6 @@
 /target
+sessions.jsonl
+usage_stats.csv
+exports/
+logs/
+*.plist
