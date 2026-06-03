@@ -16,6 +16,7 @@ use thiserror::Error;
 
 pub const DEFAULT_INTERVAL_SECONDS: u64 = 2;
 pub const DEFAULT_IDLE_THRESHOLD_SECONDS: u64 = 300;
+pub const DEFAULT_PROBE_MISS_TOLERANCE: u8 = 3;
 pub const DEFAULT_RECENT_CHECKPOINT_SECONDS: u64 = 30;
 pub const SERVICE_LABEL: &str = "com.local.activity-tracker";
 pub const IDLE_BUNDLE_ID: &str = "local.activity_tracker.idle";
@@ -200,6 +201,41 @@ pub struct SessionCheckpoint {
     pub start_time: DateTime<Local>,
     pub last_seen_at: DateTime<Local>,
     pub entity: ActiveEntity,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProbeMissStabilizer {
+    max_consecutive_misses: u8,
+    consecutive_misses: u8,
+}
+
+impl ProbeMissStabilizer {
+    #[must_use]
+    pub const fn new(max_consecutive_misses: u8) -> Self {
+        Self {
+            max_consecutive_misses,
+            consecutive_misses: 0,
+        }
+    }
+
+    #[must_use]
+    pub fn stabilize(
+        &mut self,
+        observed: Option<ActiveEntity>,
+        current: Option<&ActiveEntity>,
+    ) -> Option<ActiveEntity> {
+        if let Some(entity) = observed {
+            self.consecutive_misses = 0;
+            return Some(entity);
+        }
+
+        self.consecutive_misses = self.consecutive_misses.saturating_add(1);
+        if self.consecutive_misses <= self.max_consecutive_misses {
+            current.cloned()
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1931,6 +1967,41 @@ mod tests {
         assert_eq!(
             parse_hid_idle_nanoseconds(r#"      "HIDIdleTime" = 8099666"#),
             Some(8_099_666)
+        );
+    }
+
+    #[test]
+    fn probe_stabilizer_preserves_current_entity_for_short_misses() {
+        let mut stabilizer = ProbeMissStabilizer::new(2);
+        let current = entity();
+
+        assert_eq!(
+            stabilizer.stabilize(None, Some(&current)).as_ref(),
+            Some(&current)
+        );
+        assert_eq!(
+            stabilizer.stabilize(None, Some(&current)).as_ref(),
+            Some(&current)
+        );
+        assert_eq!(stabilizer.stabilize(None, Some(&current)), None);
+    }
+
+    #[test]
+    fn probe_stabilizer_resets_after_successful_sample() {
+        let mut stabilizer = ProbeMissStabilizer::new(1);
+        let current = entity();
+
+        assert_eq!(
+            stabilizer.stabilize(None, Some(&current)).as_ref(),
+            Some(&current)
+        );
+        assert_eq!(
+            stabilizer.stabilize(Some(current.clone()), Some(&current)),
+            Some(current.clone())
+        );
+        assert_eq!(
+            stabilizer.stabilize(None, Some(&current)).as_ref(),
+            Some(&current)
         );
     }
 

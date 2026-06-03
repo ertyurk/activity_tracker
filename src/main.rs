@@ -8,10 +8,10 @@ use std::time::Duration;
 
 use activity_tracker::{
     ActivityProbe, DEFAULT_IDLE_THRESHOLD_SECONDS, DEFAULT_INTERVAL_SECONDS,
-    DEFAULT_RECENT_CHECKPOINT_SECONDS, LogStore, MacOsProbe, Result, TrackerError, TrackerState,
-    UsageSession, filter_sessions, format_seconds, install_launch_agent, legacy_data_dir,
-    legacy_sessions_path, parse_date, service_status, summarize_all, summarize_day,
-    uninstall_launch_agent,
+    DEFAULT_PROBE_MISS_TOLERANCE, DEFAULT_RECENT_CHECKPOINT_SECONDS, LogStore, MacOsProbe,
+    ProbeMissStabilizer, Result, TrackerError, TrackerState, UsageSession, filter_sessions,
+    format_seconds, install_launch_agent, legacy_data_dir, legacy_sessions_path, parse_date,
+    service_status, summarize_all, summarize_day, uninstall_launch_agent,
 };
 use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -203,6 +203,7 @@ fn run_tracker(store: &LogStore, args: TrackArgs) -> Result<()> {
         Local::now(),
         args.idle_threshold_seconds,
     );
+    let mut stabilizer = ProbeMissStabilizer::new(DEFAULT_PROBE_MISS_TOLERANCE);
     checkpoint_current_session(store, &state, Local::now())?;
 
     if !args.quiet {
@@ -211,7 +212,8 @@ fn run_tracker(store: &LogStore, args: TrackArgs) -> Result<()> {
 
     while running.load(Ordering::SeqCst) {
         thread::sleep(interval);
-        let next_entity = active_entity_or_none(&probe);
+        let next_entity =
+            stabilizer.stabilize(active_entity_or_none(&probe), state.current_entity());
         let idle_seconds = idle_seconds_or_none(&probe);
         let now = Local::now();
 
