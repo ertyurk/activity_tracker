@@ -12,6 +12,7 @@ In-progress local-first macOS activity tracker for building near-perfect persona
 - Stabilizes brief same-browser title/URL probe misses from current tab context without mixing conflicting tab data.
 - Captures native app window title when macOS reports it, and atomically falls back to the foreground app title/name when window-level title is unavailable.
 - Stores source-of-truth logs in SQLite under `~/.activity_tracker/activity.db`.
+- Configures SQLite connections with WAL, normal synchronous mode, foreign keys, and a busy timeout so CLI reads can coexist with the background writer.
 - Maintains indexed epoch timestamps in SQLite for scalable day/range queries.
 - Mirrors completed sessions to JSONL for audit/export fallback.
 - Maintains an open-session checkpoint so a restart can recover the active span instead of losing it.
@@ -113,6 +114,7 @@ Files:
 
 Legacy data from `~/Library/Application Support/activity_tracker/sessions.jsonl` is auto-migrated into SQLite on first service/doctor/write run.
 The SQLite DB also keeps a single `open_session` heartbeat row while the tracker is running. Clean shutdown clears it; restart recovery converts it into a completed session and then starts a fresh checkpoint.
+SQLite uses WAL plus a short busy timeout so agent/SwiftUI reads do not fail during normal heartbeat writes.
 
 Override per command:
 

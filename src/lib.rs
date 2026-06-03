@@ -20,6 +20,7 @@ pub const DEFAULT_PROBE_MISS_TOLERANCE: u8 = 3;
 pub const DEFAULT_RECENT_CHECKPOINT_SECONDS: u64 = 30;
 pub const DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS: f64 = 30.0;
 pub const DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS: u64 = 60;
+pub const SQLITE_BUSY_TIMEOUT_SECONDS: u64 = 5;
 pub const MAX_AUDIT_QUALITY_ISSUES: usize = 50;
 pub const SERVICE_LABEL: &str = "com.local.activity-tracker";
 pub const IDLE_BUNDLE_ID: &str = "local.activity_tracker.idle";
@@ -803,7 +804,7 @@ impl LogStore {
         sql: &str,
         params: P,
     ) -> Result<Vec<UsageSession>> {
-        let conn = Connection::open(self.db_path())?;
+        let conn = self.open_db_connection()?;
         let mut stmt = conn.prepare(sql)?;
         let rows = stmt
             .query_map(params, db_session_row)?
@@ -1131,7 +1132,7 @@ impl LogStore {
         last_seen_at: DateTime<Local>,
     ) -> Result<()> {
         self.ensure_database_ready()?;
-        let conn = Connection::open(self.db_path())?;
+        let conn = self.open_db_connection()?;
         conn.execute(
             "INSERT INTO open_session
              (id, start_time, last_seen_at, app_name, bundle_id, title, category, url, activity_type)
@@ -1161,7 +1162,7 @@ impl LogStore {
 
     pub fn clear_checkpoint(&self) -> Result<()> {
         self.ensure_database_ready()?;
-        let conn = Connection::open(self.db_path())?;
+        let conn = self.open_db_connection()?;
         conn.execute("DELETE FROM open_session WHERE id = 1", [])?;
         Ok(())
     }
@@ -1210,11 +1211,9 @@ impl LogStore {
     }
 
     fn init_database(&self) -> Result<()> {
-        let conn = Connection::open(self.db_path())?;
+        let conn = self.open_db_connection()?;
         conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = NORMAL;
-             CREATE TABLE IF NOT EXISTS sessions (
+            "CREATE TABLE IF NOT EXISTS sessions (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  start_time TEXT NOT NULL,
                  end_time TEXT NOT NULL,
@@ -1253,6 +1252,12 @@ impl LogStore {
         )?;
         self.ensure_session_epoch_columns(&conn)?;
         Ok(())
+    }
+
+    fn open_db_connection(&self) -> Result<Connection> {
+        let conn = Connection::open(self.db_path())?;
+        configure_db_connection(&conn)?;
+        Ok(conn)
     }
 
     fn ensure_session_epoch_columns(&self, conn: &Connection) -> Result<()> {
@@ -1305,7 +1310,7 @@ impl LogStore {
     }
 
     fn load_open_session_checkpoint(&self) -> Result<Option<SessionCheckpoint>> {
-        let conn = Connection::open(self.db_path())?;
+        let conn = self.open_db_connection()?;
         let result = conn.query_row(
             "SELECT start_time, last_seen_at, app_name, bundle_id, title, category, url, activity_type
              FROM open_session
@@ -1358,13 +1363,13 @@ impl LogStore {
     }
 
     fn db_session_count(&self) -> Result<u64> {
-        let conn = Connection::open(self.db_path())?;
+        let conn = self.open_db_connection()?;
         let count = conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))?;
         Ok(count)
     }
 
     fn insert_session_db(&self, session: &UsageSession) -> Result<bool> {
-        let conn = Connection::open(self.db_path())?;
+        let conn = self.open_db_connection()?;
         let changed = conn.execute(
             "INSERT OR IGNORE INTO sessions
              (start_time, end_time, duration_seconds, app_name, bundle_id, title, category, url, activity_type, start_unix_ms, end_unix_ms)
@@ -1387,7 +1392,7 @@ impl LogStore {
     }
 
     fn update_session_category(&self, session: &UsageSession, category: &str) -> Result<()> {
-        let conn = Connection::open(self.db_path())?;
+        let conn = self.open_db_connection()?;
         conn.execute(
             "UPDATE sessions
              SET category = ?1
@@ -1413,7 +1418,7 @@ impl LogStore {
     }
 
     fn update_session_title(&self, session: &UsageSession, title: &str) -> Result<()> {
-        let conn = Connection::open(self.db_path())?;
+        let conn = self.open_db_connection()?;
         conn.execute(
             "UPDATE sessions
              SET title = ?1
@@ -1439,7 +1444,7 @@ impl LogStore {
     }
 
     fn update_session_url(&self, session: &UsageSession, url: &str) -> Result<()> {
-        let conn = Connection::open(self.db_path())?;
+        let conn = self.open_db_connection()?;
         conn.execute(
             "UPDATE sessions
              SET url = ?1
@@ -1474,7 +1479,7 @@ impl LogStore {
         repaired.title = title.cloned();
         repaired.url = url.cloned();
         let category = category_for_session(&repaired);
-        let conn = Connection::open(self.db_path())?;
+        let conn = self.open_db_connection()?;
         conn.execute(
             "UPDATE sessions
              SET title = ?1,
@@ -1539,6 +1544,16 @@ impl LogStore {
     fn is_default_root(&self) -> bool {
         default_data_dir().is_ok_and(|path| path == self.root)
     }
+}
+
+fn configure_db_connection(conn: &Connection) -> Result<()> {
+    conn.busy_timeout(StdDuration::from_secs(SQLITE_BUSY_TIMEOUT_SECONDS))?;
+    conn.execute_batch(
+        "PRAGMA foreign_keys = ON;
+         PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = NORMAL;",
+    )?;
+    Ok(())
 }
 
 #[must_use]
@@ -3915,6 +3930,27 @@ mod tests {
             mirrored.first().map(|session| &session.app_name),
             Some(&session.app_name)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn database_connections_use_durable_service_pragmas() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+
+        store.ensure_dirs()?;
+        let conn = store.open_db_connection()?;
+        let busy_timeout_ms =
+            conn.query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))?;
+        let journal_mode =
+            conn.query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))?;
+        let synchronous = conn.query_row("PRAGMA synchronous", [], |row| row.get::<_, u8>(0))?;
+        let foreign_keys = conn.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, u8>(0))?;
+
+        assert_eq!(busy_timeout_ms, SQLITE_BUSY_TIMEOUT_SECONDS * 1000);
+        assert_eq!(journal_mode, "wal");
+        assert_eq!(synchronous, 1);
+        assert_eq!(foreign_keys, 1);
         Ok(())
     }
 
