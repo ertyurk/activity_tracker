@@ -86,6 +86,8 @@ enum Command {
     Agent(AgentArgs),
     /// Check macOS permissions, probes, and writable storage.
     Doctor(OutputArgs),
+    /// Verify SQLite integrity and JSONL mirror readability.
+    Verify(OutputArgs),
     /// Install, uninstall, or inspect launchd background service.
     Service(ServiceCommand),
 }
@@ -417,6 +419,7 @@ fn run() -> Result<()> {
         Command::Health(args) => print_health(&store, args),
         Command::Agent(args) => print_agent(&store, args),
         Command::Doctor(args) => doctor(&store, args),
+        Command::Verify(args) => print_verify(&store, args),
         Command::Service(command) => run_service(&store, command),
     }
 }
@@ -1098,6 +1101,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "service status",
                 "summary",
                 "timeline",
+                "verify",
             ],
             "repair_commands": [
                 "reclassify",
@@ -1519,6 +1523,29 @@ fn doctor(store: &LogStore, args: OutputArgs) -> Result<()> {
         }
         if let Some(seconds) = idle_seconds {
             println!("idle_seconds: {seconds:.1}");
+        }
+        Ok(())
+    }
+}
+
+fn print_verify(store: &LogStore, args: OutputArgs) -> Result<()> {
+    let report = store.verify_storage()?;
+    if args.json {
+        print_json(&report)
+    } else {
+        println!("ok: {}", yes_no(report.ok));
+        println!("sqlite_exists: {}", yes_no(report.sqlite_exists));
+        println!(
+            "sqlite_integrity_ok: {}",
+            yes_no(report.sqlite_integrity_ok)
+        );
+        println!("sqlite_session_count: {}", report.sqlite_session_count);
+        println!("jsonl_exists: {}", yes_no(report.jsonl_exists));
+        println!("jsonl_readable: {}", yes_no(report.jsonl_readable));
+        println!("jsonl_session_count: {}", report.jsonl_session_count);
+        println!("mirror_in_sync: {}", yes_no(report.mirror_in_sync));
+        if let Some(error) = report.jsonl_error {
+            println!("jsonl_error: {error}");
         }
         Ok(())
     }

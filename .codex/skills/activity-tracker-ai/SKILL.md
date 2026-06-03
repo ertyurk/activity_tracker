@@ -41,6 +41,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 
 - Health check: `cargo run -- doctor --json`
 - Service substrate health: `cargo run -- health --json`
+- Storage verification: `cargo run -- verify --json`
 - CLI/data contract: `cargo run -- schema --json`
 - Current activity: `cargo run -- now --json`
 - AI/reporting hook: `cargo run -- agent --json`
@@ -66,6 +67,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Keep routine day/range reads backed by SQLite indexed time columns rather than all-history scans.
 - Persist each completed session immediately to SQLite and mirror it to JSONL; CSV is derived.
 - Configure each SQLite connection with WAL, normal synchronous mode, foreign keys, and busy timeout so background writes and agent reads coexist.
+- Use `verify --json` to check SQLite integrity and JSONL mirror readability/count sync.
 - Maintain the SQLite `open_session` heartbeat so crash/restart recovery does not lose the active span.
 - Include the provisional open session in live query commands (`day`, `logs`, `query`, `summary`, `report`) when it overlaps the query.
 - Keep windowed summaries and timelines clipped to requested day/range/last-minutes bounds; raw session arrays can retain original persisted start/end for audit/debug context.

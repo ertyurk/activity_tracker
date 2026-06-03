@@ -61,6 +61,7 @@ activity_tracker agent --last-minutes 240 --json
 activity_tracker agent 2026-06-03 --json
 activity_tracker health --json
 activity_tracker doctor --json
+activity_tracker verify --json
 activity_tracker service status --json
 activity_tracker day 2026-06-03 --json
 activity_tracker report 2026-06-03 --json
@@ -103,6 +104,7 @@ Windowed summaries and timelines are clipped to the requested day/range/last-min
 `audit --json` reports log quality for a day or explicit window: gaps above a configurable threshold, overlaps, invalid rows, missing titles, browser sessions missing URLs, browser blank tabs, suspicious browser title/URL mismatches, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, bounded quality issue samples, and current open-session state. With `--last-minutes`, `--since`/`--until`, or `--from`/`--to`, audit uses the same indexed window query as `query`; explicit windows include leading/trailing uncovered spans as gaps. Known browser blank tabs are canonicalized as `about:newtab` for new sessions.
 `health --json` is the cheap service substrate check for agents: launchd state, storage freshness, latest observed activity age, open checkpoint, paths, and today's audit/quality counts and breakdowns.
 `now --json` is the cheapest current-state poll for SwiftUI/menu-bar clients: service running state, freshness, checkpoint recency, current provisional session, open checkpoint, latest completed session, and paths.
+`verify --json` runs storage integrity checks: SQLite integrity, SQLite session count, JSONL mirror readability, JSONL session count, and mirror count sync.
 `service status --json` reports launchd load/running state, PID, program, arguments, and log paths without requiring agents to parse `launchctl` text.
 `schema --json` reports the stable CLI/data contract: storage paths, default thresholds, activity types, known categories, session fields, supported window args, filters, read commands, repair commands, service commands, quality issue kinds, and local-privacy flags.
 `reclassify` recomputes categories from current app and browser-domain rules, useful after improving category mappings.

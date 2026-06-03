@@ -409,6 +409,22 @@ pub struct StorageHealth {
     pub fresh: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct StorageVerification {
+    pub ok: bool,
+    pub sqlite_path: PathBuf,
+    pub sqlite_exists: bool,
+    pub sqlite_integrity_ok: bool,
+    pub sqlite_integrity_messages: Vec<String>,
+    pub sqlite_session_count: u64,
+    pub jsonl_path: PathBuf,
+    pub jsonl_exists: bool,
+    pub jsonl_readable: bool,
+    pub jsonl_error: Option<String>,
+    pub jsonl_session_count: usize,
+    pub mirror_in_sync: bool,
+}
+
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct ImportReport {
     pub scanned: usize,
@@ -778,6 +794,48 @@ impl LogStore {
             latest_observed_age_seconds,
             stale_threshold_seconds,
             fresh,
+        })
+    }
+
+    pub fn verify_storage(&self) -> Result<StorageVerification> {
+        self.ensure_dirs()?;
+        let sqlite_path = self.db_path();
+        let jsonl_path = self.sessions_path();
+        let sqlite_exists = sqlite_path.exists();
+        let sqlite_integrity_messages = self.sqlite_integrity_check()?;
+        let sqlite_integrity_ok = sqlite_integrity_messages.len() == 1
+            && sqlite_integrity_messages.first() == Some(&"ok".to_string());
+        let sqlite_session_count = self.db_session_count()?;
+        let jsonl_exists = jsonl_path.exists();
+        let jsonl_result = if jsonl_exists {
+            load_jsonl_sessions_from_path(&jsonl_path)
+        } else {
+            Ok(Vec::new())
+        };
+        let (jsonl_readable, jsonl_error, jsonl_session_count) = match jsonl_result {
+            Ok(sessions) => (true, None, sessions.len()),
+            Err(error) => (false, Some(error.to_string()), 0),
+        };
+        let mirror_in_sync = jsonl_readable && sqlite_session_count as usize == jsonl_session_count;
+        let ok = sqlite_exists
+            && sqlite_integrity_ok
+            && jsonl_exists
+            && jsonl_readable
+            && mirror_in_sync;
+
+        Ok(StorageVerification {
+            ok,
+            sqlite_path,
+            sqlite_exists,
+            sqlite_integrity_ok,
+            sqlite_integrity_messages,
+            sqlite_session_count,
+            jsonl_path,
+            jsonl_exists,
+            jsonl_readable,
+            jsonl_error,
+            jsonl_session_count,
+            mirror_in_sync,
         })
     }
 
@@ -1486,6 +1544,15 @@ impl LogStore {
         let conn = self.open_db_connection()?;
         let count = conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))?;
         Ok(count)
+    }
+
+    fn sqlite_integrity_check(&self) -> Result<Vec<String>> {
+        let conn = self.open_db_connection()?;
+        let mut stmt = conn.prepare("PRAGMA integrity_check")?;
+        let messages = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<String>, _>>()?;
+        Ok(messages)
     }
 
     fn insert_session_db(&self, session: &UsageSession) -> Result<bool> {
@@ -4434,6 +4501,37 @@ mod tests {
                 .len(),
             1
         );
+        Ok(())
+    }
+
+    #[test]
+    fn verify_storage_reports_sqlite_and_jsonl_mirror_health() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let end = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing end"))?;
+        let session = UsageSession::from_entity(&entity(), start, end)
+            .ok_or_else(|| anyhow::anyhow!("missing session"))?;
+
+        store.append_session(&session)?;
+        let report = store.verify_storage()?;
+
+        assert!(report.ok);
+        assert!(report.sqlite_exists);
+        assert!(report.sqlite_integrity_ok);
+        assert_eq!(report.sqlite_integrity_messages, vec!["ok"]);
+        assert_eq!(report.sqlite_session_count, 1);
+        assert!(report.jsonl_exists);
+        assert!(report.jsonl_readable);
+        assert_eq!(report.jsonl_error, None);
+        assert_eq!(report.jsonl_session_count, 1);
+        assert!(report.mirror_in_sync);
         Ok(())
     }
 

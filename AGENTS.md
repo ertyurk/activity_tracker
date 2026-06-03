@@ -29,6 +29,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - `inventory --json` should provide windowed app/domain/category/activity-type facets for SwiftUI filter menus and AI planning without raw-log scans.
 - `schema --json` should expose CLI/data-contract capabilities for SwiftUI and tool harness setup.
 - `now --json` should remain a cheap current-activity poll for SwiftUI/menu-bar clients.
+- `verify --json` should prove SQLite integrity and JSONL mirror readability/count sync.
 - Keep window-scoped quality issue samples in `agent --json`; compact today-wide audit samples to keep payload bounded.
 - Keep `agent` repair commands scoped to the same audited window, and keep `reclassify`/repair commands window-aware so agents do not mutate all history for a narrow report.
 - Use `agent.repair_plan.actionable_commands` for automated fixes; `agent.quality.repair_commands` are candidates and may explain non-repairable quality warnings.
@@ -59,6 +60,7 @@ cargo run -- health --json
 cargo run -- agent --json
 cargo run -- agent --last-minutes 240 --json
 cargo run -- doctor
+cargo run -- verify --json
 cargo run -- paths --json
 cargo run -- schema --json
 cargo run -- now --json
