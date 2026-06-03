@@ -428,6 +428,14 @@ pub struct StorageVerification {
     pub mirror_count_matches: bool,
     pub mirror_content_matches: bool,
     pub mirror_in_sync: bool,
+    pub csv_path: PathBuf,
+    pub csv_exists: bool,
+    pub csv_readable: bool,
+    pub csv_error: Option<String>,
+    pub csv_session_count: usize,
+    pub csv_count_matches: bool,
+    pub csv_content_matches: bool,
+    pub csv_in_sync: bool,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -742,6 +750,7 @@ impl LogStore {
         } else {
             self.ensure_jsonl_mirror_exists()?;
         }
+        self.ensure_default_csv_exists()?;
         Ok(())
     }
 
@@ -856,6 +865,7 @@ impl LogStore {
         self.ensure_dirs()?;
         let sqlite_path = self.db_path();
         let jsonl_path = self.sessions_path();
+        let csv_path = self.csv_path();
         let sqlite_exists = sqlite_path.exists();
         let sqlite_integrity_messages = self.sqlite_integrity_check()?;
         let sqlite_integrity_ok = sqlite_integrity_messages.len() == 1
@@ -876,11 +886,29 @@ impl LogStore {
         let mirror_count_matches = jsonl_readable && sqlite_sessions.len() == jsonl_session_count;
         let mirror_content_matches = mirror_count_matches && sqlite_sessions == jsonl_sessions;
         let mirror_in_sync = mirror_count_matches && mirror_content_matches;
+        let csv_exists = csv_path.exists();
+        let csv_result = if csv_exists {
+            load_csv_sessions_from_path(&csv_path)
+        } else {
+            Ok(Vec::new())
+        };
+        let (csv_readable, csv_error, csv_sessions) = match csv_result {
+            Ok(sessions) => (true, None, sessions),
+            Err(error) => (false, Some(error.to_string()), Vec::new()),
+        };
+        let csv_session_count = csv_sessions.len();
+        let csv_count_matches = csv_readable && sqlite_sessions.len() == csv_session_count;
+        let csv_content_matches =
+            csv_count_matches && sessions_match_csv_view(&sqlite_sessions, &csv_sessions);
+        let csv_in_sync = csv_count_matches && csv_content_matches;
         let ok = sqlite_exists
             && sqlite_integrity_ok
             && jsonl_exists
             && jsonl_readable
-            && mirror_in_sync;
+            && mirror_in_sync
+            && csv_exists
+            && csv_readable
+            && csv_in_sync;
 
         Ok(StorageVerification {
             ok,
@@ -897,6 +925,14 @@ impl LogStore {
             mirror_count_matches,
             mirror_content_matches,
             mirror_in_sync,
+            csv_path,
+            csv_exists,
+            csv_readable,
+            csv_error,
+            csv_session_count,
+            csv_count_matches,
+            csv_content_matches,
+            csv_in_sync,
         })
     }
 
@@ -1890,6 +1926,13 @@ impl LogStore {
         self.rewrite_jsonl_mirror_from_db()
     }
 
+    fn ensure_default_csv_exists(&self) -> Result<()> {
+        if self.csv_path().exists() {
+            return Ok(());
+        }
+        self.refresh_default_csv_unlocked()
+    }
+
     fn rewrite_jsonl_mirror_from_db(&self) -> Result<()> {
         let sessions = self.load_sessions_from_db()?;
         let mirror_path = self.sessions_path();
@@ -1949,6 +1992,29 @@ fn write_csv_session<W: Write>(writer: &mut Writer<W>, session: &UsageSession) -
         session.url.clone().unwrap_or_default(),
     ])?;
     Ok(())
+}
+
+fn sessions_match_csv_view(
+    sqlite_sessions: &[UsageSession],
+    csv_sessions: &[UsageSession],
+) -> bool {
+    sqlite_sessions.len() == csv_sessions.len()
+        && sqlite_sessions
+            .iter()
+            .zip(csv_sessions)
+            .all(|(sqlite, csv)| session_matches_csv_view(sqlite, csv))
+}
+
+fn session_matches_csv_view(sqlite: &UsageSession, csv: &UsageSession) -> bool {
+    sqlite.start_time == csv.start_time
+        && sqlite.end_time == csv.end_time
+        && format!("{:.3}", sqlite.duration_seconds) == format!("{:.3}", csv.duration_seconds)
+        && sqlite.app_name == csv.app_name
+        && sqlite.bundle_id == csv.bundle_id
+        && sqlite.title == csv.title
+        && sqlite.category == csv.category
+        && sqlite.url == csv.url
+        && sqlite.activity_type == csv.activity_type
 }
 
 #[must_use]
@@ -4609,6 +4675,18 @@ fn load_jsonl_sessions_from_path(path: &Path) -> Result<Vec<UsageSession>> {
     Ok(sessions)
 }
 
+fn load_csv_sessions_from_path(path: &Path) -> Result<Vec<UsageSession>> {
+    let mut reader = csv::Reader::from_path(path)?;
+    let headers = reader.headers()?.clone();
+    let columns = CsvColumns::from_headers(&headers)?;
+    let mut sessions = Vec::new();
+    for record in reader.records() {
+        let record = record?;
+        sessions.push(columns.session_from_record(&record)?);
+    }
+    Ok(sessions)
+}
+
 fn output_with_timeout(command: &mut Command, timeout: StdDuration, label: &str) -> Result<Output> {
     let mut child = command
         .stdout(Stdio::piped())
@@ -4815,6 +4893,13 @@ mod tests {
         assert!(report.mirror_count_matches);
         assert!(report.mirror_content_matches);
         assert!(report.mirror_in_sync);
+        assert!(report.csv_exists);
+        assert!(report.csv_readable);
+        assert_eq!(report.csv_error, None);
+        assert_eq!(report.csv_session_count, 1);
+        assert!(report.csv_count_matches);
+        assert!(report.csv_content_matches);
+        assert!(report.csv_in_sync);
         Ok(())
     }
 
@@ -4858,6 +4943,43 @@ mod tests {
     }
 
     #[test]
+    fn verify_storage_rejects_stale_csv_content() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let end = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing end"))?;
+        let session = UsageSession::from_entity(&entity(), start, end)
+            .ok_or_else(|| anyhow::anyhow!("missing session"))?;
+
+        store.append_session(&session)?;
+        let mut stale = session.clone();
+        stale.category = "Development".to_string();
+        store.write_csv(&store.csv_path(), &[stale])?;
+
+        let stale_report = store.verify_storage()?;
+        assert!(!stale_report.ok);
+        assert!(stale_report.mirror_in_sync);
+        assert!(stale_report.csv_readable);
+        assert_eq!(stale_report.csv_session_count, 1);
+        assert!(stale_report.csv_count_matches);
+        assert!(!stale_report.csv_content_matches);
+        assert!(!stale_report.csv_in_sync);
+
+        store.repair_jsonl_mirror()?;
+        let repaired = store.verify_storage()?;
+        assert!(repaired.ok);
+        assert!(repaired.csv_content_matches);
+        assert!(repaired.csv_in_sync);
+        Ok(())
+    }
+
+    #[test]
     fn repair_jsonl_mirror_recovers_from_corrupt_mirror() -> AnyhowResult<()> {
         let dir = tempfile::tempdir()?;
         let store = LogStore::new(dir.path().to_path_buf());
@@ -4880,6 +5002,7 @@ mod tests {
         assert!(!broken.mirror_count_matches);
         assert!(!broken.mirror_content_matches);
         assert!(!broken.mirror_in_sync);
+        assert!(broken.csv_in_sync);
 
         let repair = store.repair_jsonl_mirror()?;
         let verified = store.verify_storage()?;
@@ -4891,6 +5014,9 @@ mod tests {
         assert!(verified.mirror_count_matches);
         assert!(verified.mirror_content_matches);
         assert!(verified.mirror_in_sync);
+        assert!(verified.csv_count_matches);
+        assert!(verified.csv_content_matches);
+        assert!(verified.csv_in_sync);
         Ok(())
     }
 

@@ -69,7 +69,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Keep routine day/range reads backed by SQLite indexed time columns rather than all-history scans.
 - Persist each completed session immediately to SQLite, mirror it to JSONL, and append it to the default CSV view; repair commands may rewrite derived files from SQLite.
 - Configure each SQLite connection with WAL, normal synchronous mode, foreign keys, and busy timeout so background writes and agent reads coexist.
-- Use `verify --json` to check SQLite integrity and JSONL mirror readability/count/content sync.
+- Use `verify --json` to check SQLite integrity plus JSONL and default CSV readability/count/content sync.
 - Use `repair-mirror --json` to rebuild JSONL mirror and CSV view from SQLite if verification reports a broken or out-of-sync mirror.
 - Maintain the SQLite `open_session` heartbeat so crash/restart recovery does not lose the active span.
 - Include the provisional open session in live query commands (`day`, `logs`, `query`, `summary`, `report`) when it overlaps the query.

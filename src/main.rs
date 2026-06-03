@@ -1058,7 +1058,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     let now = Local::now();
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 3,
+            "schema_version": 4,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1134,6 +1134,14 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "mirror_count_matches",
                 "mirror_content_matches",
                 "mirror_in_sync",
+                "csv_path",
+                "csv_exists",
+                "csv_readable",
+                "csv_error",
+                "csv_session_count",
+                "csv_count_matches",
+                "csv_content_matches",
+                "csv_in_sync",
             ],
             "agent_fields": [
                 {"name": "generated_at", "type": "rfc3339_datetime", "required": true},
@@ -1222,7 +1230,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 3");
+        println!("schema_version: 4");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
@@ -1654,8 +1662,20 @@ fn print_verify(store: &LogStore, args: OutputArgs) -> Result<()> {
             yes_no(report.mirror_content_matches)
         );
         println!("mirror_in_sync: {}", yes_no(report.mirror_in_sync));
+        println!("csv_exists: {}", yes_no(report.csv_exists));
+        println!("csv_readable: {}", yes_no(report.csv_readable));
+        println!("csv_session_count: {}", report.csv_session_count);
+        println!("csv_count_matches: {}", yes_no(report.csv_count_matches));
+        println!(
+            "csv_content_matches: {}",
+            yes_no(report.csv_content_matches)
+        );
+        println!("csv_in_sync: {}", yes_no(report.csv_in_sync));
         if let Some(error) = report.jsonl_error {
             println!("jsonl_error: {error}");
+        }
+        if let Some(error) = report.csv_error {
+            println!("csv_error: {error}");
         }
         Ok(())
     }
