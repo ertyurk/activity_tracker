@@ -19,6 +19,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - Preserve longer unknown/probe-unavailable spans as `activity_type: "untracked"` when the collector recovers.
 - Keep an `open_session` heartbeat checkpoint so service restarts recover the current span instead of dropping it.
 - Live query commands should include the current open session provisionally; exports should stay completed-session based.
+- Agent/report readiness and quality gates should be scoped to the requested window; include today-wide audit as separate background context.
 - Tolerate brief active-app probe misses; do not turn transient macOS/AppleScript failures into fake gaps.
 - Audit should expose suspicious browser title/URL mismatches so old mixed-context rows are visible to agents.
 - Use `repair-context` only for high-confidence browser title/URL mismatch or missing-context repairs with neighbor or exact-URL evidence.

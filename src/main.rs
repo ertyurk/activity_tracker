@@ -901,9 +901,8 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
     let today_sessions =
         store.sessions_for_day_with_open(today, now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
     let today_audit = audit_sessions(&today_sessions, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS);
-    let ready = agent_ready(&service, &storage, &today_audit);
-    let warnings = agent_warnings(&service, &storage, &today_audit);
-    let quality = agent_quality(&today_audit);
+    let today_quality = agent_quality(&today_audit);
+    let today_warnings = agent_warnings(&service, &storage, &today_audit);
 
     let (window_mode, window_date, window_last_minutes, window_start, window_end, sessions) =
         if let Some(date_input) = args.date.as_deref() {
@@ -944,6 +943,10 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
             )
         };
 
+    let window_audit = audit_sessions(&sessions, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS);
+    let ready = agent_ready(&service, &storage, &window_audit);
+    let warnings = agent_warnings(&service, &storage, &window_audit);
+    let quality = agent_quality(&window_audit);
     let summary = summarize_all(&sessions);
     let summary_truncated = summary_rows_truncated(&summary, args.summary_limit);
     let summary = limit_summary(summary, args.summary_limit);
@@ -959,6 +962,7 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
 
     if args.json {
         let today_audit = compact_audit(today_audit.clone());
+        let window_audit = compact_audit(window_audit);
         let value = serde_json::json!({
             "generated_at": now,
             "ready": ready,
@@ -979,7 +983,10 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
                 "latest_observed_age_seconds": storage.latest_observed_age_seconds,
                 "session_count": storage.session_count,
             },
+            "window_audit": window_audit,
             "today_audit": today_audit,
+            "today_quality": today_quality,
+            "today_warnings": today_warnings,
             "summary": summary,
             "timeline": timeline,
             "timeline_count": timeline_count,
