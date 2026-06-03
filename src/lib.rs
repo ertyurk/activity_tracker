@@ -382,6 +382,10 @@ pub struct ServiceStatusReport {
     pub loaded: bool,
     pub running: bool,
     pub pid: Option<u32>,
+    pub program: Option<String>,
+    pub arguments: Vec<String>,
+    pub stdout_path: Option<String>,
+    pub stderr_path: Option<String>,
     pub raw: Option<String>,
     pub error: Option<String>,
 }
@@ -2801,6 +2805,10 @@ pub fn service_status_report() -> ServiceStatusReport {
             loaded: false,
             running: false,
             pid: None,
+            program: None,
+            arguments: Vec::new(),
+            stdout_path: None,
+            stderr_path: None,
             raw: None,
             error: Some(error.to_string()),
         },
@@ -2811,11 +2819,25 @@ pub fn service_status_report() -> ServiceStatusReport {
 pub fn parse_service_status(raw: &str) -> ServiceStatusReport {
     let running = raw.lines().any(|line| line.trim() == "state = running");
     let pid = raw.lines().find_map(parse_service_pid);
+    let program = raw
+        .lines()
+        .find_map(|line| parse_service_value(line, "program = "));
+    let stdout_path = raw
+        .lines()
+        .find_map(|line| parse_service_value(line, "stdout path = "));
+    let stderr_path = raw
+        .lines()
+        .find_map(|line| parse_service_value(line, "stderr path = "));
+    let arguments = parse_service_arguments(raw);
     ServiceStatusReport {
         label: SERVICE_LABEL.to_string(),
         loaded: true,
         running,
         pid,
+        program,
+        arguments,
+        stdout_path,
+        stderr_path,
         raw: Some(raw.to_string()),
         error: None,
     }
@@ -2823,6 +2845,29 @@ pub fn parse_service_status(raw: &str) -> ServiceStatusReport {
 
 fn parse_service_pid(line: &str) -> Option<u32> {
     line.trim().strip_prefix("pid = ")?.parse().ok()
+}
+
+fn parse_service_value(line: &str, prefix: &str) -> Option<String> {
+    line.trim().strip_prefix(prefix).map(str::to_string)
+}
+
+fn parse_service_arguments(raw: &str) -> Vec<String> {
+    let mut arguments = Vec::new();
+    let mut in_arguments = false;
+    for line in raw.lines() {
+        let line = line.trim();
+        if line == "arguments = {" {
+            in_arguments = true;
+            continue;
+        }
+        if in_arguments && line == "}" {
+            break;
+        }
+        if in_arguments && !line.is_empty() {
+            arguments.push(line.to_string());
+        }
+    }
+    arguments
 }
 
 #[must_use]
@@ -6200,13 +6245,41 @@ mod tests {
 
     #[test]
     fn service_status_parser_extracts_running_pid() {
-        let raw = format!("gui/501/{SERVICE_LABEL} = {{\n\tstate = running\n\tpid = 12345\n}}\n");
+        let raw = format!(
+            "gui/501/{SERVICE_LABEL} = {{\n\
+\tstate = running\n\
+\tprogram = /tmp/activity_tracker\n\
+\targuments = {{\n\
+\t\t/tmp/activity_tracker\n\
+\t\ttrack\n\
+\t\t--quiet\n\
+\t\t--interval-seconds\n\
+\t\t2\n\
+\t}}\n\
+\tstdout path = /tmp/out.log\n\
+\tstderr path = /tmp/err.log\n\
+\tpid = 12345\n\
+}}\n"
+        );
 
         let report = parse_service_status(&raw);
 
         assert!(report.loaded);
         assert!(report.running);
         assert_eq!(report.pid, Some(12_345));
+        assert_eq!(report.program.as_deref(), Some("/tmp/activity_tracker"));
+        assert_eq!(
+            report.arguments,
+            vec![
+                "/tmp/activity_tracker",
+                "track",
+                "--quiet",
+                "--interval-seconds",
+                "2"
+            ]
+        );
+        assert_eq!(report.stdout_path.as_deref(), Some("/tmp/out.log"));
+        assert_eq!(report.stderr_path.as_deref(), Some("/tmp/err.log"));
         assert!(report.error.is_none());
     }
 

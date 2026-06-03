@@ -1051,6 +1051,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
             "window_args": ["--from", "--to", "--since", "--until", "--last-minutes"],
             "filters": ["--app", "--title", "--url", "--text", "--category", "--domain", "--activity-type", "--limit"],
             "service_install_args": ["--bin", "--interval-seconds", "--idle-threshold-seconds", "--no-load"],
+            "service_status_fields": ["label", "loaded", "running", "pid", "program", "arguments", "stdout_path", "stderr_path", "raw", "error"],
             "read_commands": [
                 "agent",
                 "audit",
