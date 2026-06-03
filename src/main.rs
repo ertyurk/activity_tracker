@@ -1058,7 +1058,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     let now = Local::now();
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1143,6 +1143,26 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "csv_content_matches",
                 "csv_in_sync",
             ],
+            "doctor_fields": [
+                "generated_at",
+                "ok",
+                "data_dir_writable",
+                "osascript_ok",
+                "osascript_error",
+                "active_probe_ok",
+                "active_probe_error",
+                "active_entity",
+                "idle_probe_ok",
+                "idle_probe_error",
+                "idle_seconds",
+                "storage_verification",
+                "sqlite",
+                "sessions_path",
+                "csv",
+                "open_session",
+                "legacy_sessions_path",
+                "hints",
+            ],
             "agent_fields": [
                 {"name": "generated_at", "type": "rfc3339_datetime", "required": true},
                 {"name": "ready", "type": "boolean", "required": true},
@@ -1193,6 +1213,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "agent",
                 "audit",
                 "day",
+                "doctor",
                 "health",
                 "inventory",
                 "logs",
@@ -1231,7 +1252,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 5");
+        println!("schema_version: 6");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
@@ -1596,50 +1617,176 @@ fn compact_audit(mut audit: ActivityAudit) -> ActivityAudit {
     audit
 }
 
+#[derive(Debug, Serialize)]
+struct DoctorReport {
+    generated_at: chrono::DateTime<Local>,
+    ok: bool,
+    data_dir_writable: bool,
+    osascript_ok: bool,
+    osascript_error: Option<String>,
+    active_probe_ok: bool,
+    active_probe_error: Option<String>,
+    active_entity: Option<activity_tracker::ActiveEntity>,
+    idle_probe_ok: bool,
+    idle_probe_error: Option<String>,
+    idle_seconds: Option<f64>,
+    storage_verification: activity_tracker::StorageVerification,
+    sqlite: PathBuf,
+    sessions_path: PathBuf,
+    csv: PathBuf,
+    open_session: Option<activity_tracker::SessionCheckpoint>,
+    legacy_sessions_path: Option<PathBuf>,
+    hints: Vec<String>,
+}
+
+#[derive(Debug)]
+struct DiagnosticCheck<T> {
+    ok: bool,
+    value: Option<T>,
+    error: Option<String>,
+}
+
 fn doctor(store: &LogStore, args: OutputArgs) -> Result<()> {
+    let probe = MacOsProbe;
+    let report = build_doctor_report(store, &probe, check_osascript())?;
+
+    if args.json {
+        print_json(&report)
+    } else {
+        print_doctor_text(&report);
+        Ok(())
+    }
+}
+
+fn build_doctor_report<P: ActivityProbe>(
+    store: &LogStore,
+    probe: &P,
+    osascript: DiagnosticCheck<()>,
+) -> Result<DoctorReport> {
     store.ensure_dirs()?;
     let checkpoint = store.open_session_checkpoint()?;
-    let probe = MacOsProbe;
-    let active = probe.active_entity()?;
-    let idle_seconds = probe.idle_seconds()?;
-    let osascript = std::process::Command::new("osascript")
+    let active = check_optional_probe(probe.active_entity());
+    let idle = check_optional_probe(probe.idle_seconds());
+    let storage_verification = store.verify_storage()?;
+    let mut hints = Vec::new();
+    if !osascript.ok || !active.ok {
+        hints.push("grant_accessibility_permission_to_terminal_or_tracker_binary".to_string());
+    }
+    if !idle.ok {
+        hints.push("check_ioreg_hid_idle_probe_availability".to_string());
+    }
+    if !storage_verification.ok {
+        hints.push("run_activity_tracker_verify_json_or_repair_mirror_json".to_string());
+    }
+    let ok = osascript.ok && active.ok && idle.ok && storage_verification.ok;
+
+    Ok(DoctorReport {
+        generated_at: Local::now(),
+        ok,
+        data_dir_writable: true,
+        osascript_ok: osascript.ok,
+        osascript_error: osascript.error,
+        active_probe_ok: active.ok,
+        active_probe_error: active.error,
+        active_entity: active.value,
+        idle_probe_ok: idle.ok,
+        idle_probe_error: idle.error,
+        idle_seconds: idle.value,
+        storage_verification,
+        sqlite: store.db_path(),
+        sessions_path: store.sessions_path(),
+        csv: store.csv_path(),
+        open_session: checkpoint,
+        legacy_sessions_path: legacy_sessions_path(),
+        hints,
+    })
+}
+
+fn check_osascript() -> DiagnosticCheck<()> {
+    match std::process::Command::new("osascript")
         .arg("-e")
         .arg("return \"ok\"")
         .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false);
+    {
+        Ok(output) if output.status.success() => DiagnosticCheck {
+            ok: true,
+            value: Some(()),
+            error: None,
+        },
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let error = if stderr.is_empty() {
+                output.status.to_string()
+            } else {
+                stderr
+            };
+            DiagnosticCheck {
+                ok: false,
+                value: None,
+                error: Some(error),
+            }
+        }
+        Err(error) => DiagnosticCheck {
+            ok: false,
+            value: None,
+            error: Some(error.to_string()),
+        },
+    }
+}
 
-    if args.json {
-        let value = serde_json::json!({
-            "data_dir_writable": true,
-            "osascript": osascript,
-            "active_entity": active,
-            "idle_seconds": idle_seconds,
-            "sqlite": store.db_path(),
-            "sessions_path": store.sessions_path(),
-            "open_session": checkpoint,
-            "legacy_sessions_path": legacy_sessions_path(),
-        });
-        print_json(&value)
+fn check_optional_probe<T>(result: Result<Option<T>>) -> DiagnosticCheck<T> {
+    match result {
+        Ok(value) => DiagnosticCheck {
+            ok: true,
+            value,
+            error: None,
+        },
+        Err(error) => DiagnosticCheck {
+            ok: false,
+            value: None,
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+fn print_doctor_text(report: &DoctorReport) {
+    println!("ok: {}", yes_no(report.ok));
+    println!("data_dir_writable: {}", yes_no(report.data_dir_writable));
+    println!("osascript: {}", yes_no(report.osascript_ok));
+    if let Some(error) = &report.osascript_error {
+        println!("osascript_error: {error}");
+    }
+    println!("active_probe: {}", yes_no(report.active_probe_ok));
+    if let Some(error) = &report.active_probe_error {
+        println!("active_probe_error: {error}");
+    }
+    if let Some(entity) = &report.active_entity {
+        println!(
+            "active_entity: {} | {} | {} | {}",
+            entity.name,
+            entity.bundle_id,
+            entity.category,
+            entity.title.as_deref().unwrap_or_default()
+        );
     } else {
-        println!("data_dir_writable: yes");
-        println!("osascript: {}", yes_no(osascript));
-        if let Some(entity) = active {
-            println!(
-                "active_entity: {} | {} | {} | {}",
-                entity.name,
-                entity.bundle_id,
-                entity.category,
-                entity.title.unwrap_or_default()
-            );
-        } else {
-            println!("active_entity: unavailable");
-            println!("hint: grant Accessibility permission to terminal/app running tracker");
-        }
-        if let Some(seconds) = idle_seconds {
-            println!("idle_seconds: {seconds:.1}");
-        }
-        Ok(())
+        println!("active_entity: unavailable");
+    }
+    println!("idle_probe: {}", yes_no(report.idle_probe_ok));
+    if let Some(error) = &report.idle_probe_error {
+        println!("idle_probe_error: {error}");
+    }
+    if let Some(seconds) = report.idle_seconds {
+        println!("idle_seconds: {seconds:.1}");
+    }
+    println!(
+        "storage_verified: {}",
+        yes_no(report.storage_verification.ok)
+    );
+    println!("sqlite: {}", report.sqlite.display());
+    println!("sessions_path: {}", report.sessions_path.display());
+    println!("csv: {}", report.csv.display());
+    for hint in &report.hints {
+        println!("hint: {hint}");
     }
 }
 
@@ -2525,6 +2672,68 @@ mod tests {
             entity.map(|entity| entity.activity_type),
             Some(activity_tracker::ActivityType::Idle)
         );
+    }
+
+    #[test]
+    fn doctor_report_surfaces_probe_errors_without_failing() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let report = build_doctor_report(
+            &store,
+            &FailingProbe,
+            DiagnosticCheck {
+                ok: false,
+                value: None,
+                error: Some("osascript unavailable".to_string()),
+            },
+        )?;
+
+        assert!(!report.ok);
+        assert!(report.data_dir_writable);
+        assert!(!report.osascript_ok);
+        assert_eq!(
+            report.osascript_error.as_deref(),
+            Some("osascript unavailable")
+        );
+        assert!(!report.active_probe_ok);
+        assert_eq!(
+            report.active_probe_error.as_deref(),
+            Some("AppleScript failed: probe denied")
+        );
+        assert!(!report.idle_probe_ok);
+        assert_eq!(
+            report.idle_probe_error.as_deref(),
+            Some("command `ioreg` timed out")
+        );
+        assert!(report.storage_verification.ok);
+        assert!(
+            report.hints.contains(
+                &"grant_accessibility_permission_to_terminal_or_tracker_binary".to_string()
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_report_marks_clean_checks_ok() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let report = build_doctor_report(
+            &store,
+            &IdleProbe,
+            DiagnosticCheck {
+                ok: true,
+                value: Some(()),
+                error: None,
+            },
+        )?;
+
+        assert!(report.ok);
+        assert!(report.active_probe_ok);
+        assert!(report.idle_probe_ok);
+        assert!(report.storage_verification.ok);
+        assert!(report.hints.is_empty());
+        Ok(())
     }
 
     #[test]

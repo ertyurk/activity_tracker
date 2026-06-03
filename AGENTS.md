@@ -46,6 +46,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - `service install` should persist configured `--interval-seconds` and `--idle-threshold-seconds` into LaunchAgent arguments.
 - `service status --json` should expose normalized program, arguments, stdout path, and stderr path.
 - `service logs --json` should expose bounded launchd stdout/stderr tails with paths for service diagnostics.
+- `doctor --json` should keep setup diagnostics machine-readable and non-fatal for active-app or idle probe failures; expose probe status/error fields and hints instead of exiting before agents can inspect the payload.
 - CLI output should support plain text for humans and `--json` for agents; quality commands should expose both time coverage and context richness.
 
 ## Rust Rules
