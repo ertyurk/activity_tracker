@@ -1058,7 +1058,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     let now = Local::now();
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1119,6 +1119,51 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
             "filters": ["--app", "--title", "--url", "--text", "--category", "--domain", "--activity-type", "--limit", "--order"],
             "service_install_args": ["--bin", "--interval-seconds", "--idle-threshold-seconds", "--no-load"],
             "service_status_fields": ["label", "loaded", "running", "pid", "program", "arguments", "stdout_path", "stderr_path", "raw", "error"],
+            "agent_fields": [
+                {"name": "generated_at", "type": "rfc3339_datetime", "required": true},
+                {"name": "ready", "type": "boolean", "required": true},
+                {"name": "report_ready", "type": "boolean", "required": true},
+                {"name": "action_required", "type": "boolean", "required": true},
+                {"name": "quality", "type": "object", "required": true},
+                {"name": "repair_plan", "type": "object", "required": true},
+                {"name": "warnings", "type": "array<string>", "required": true},
+                {"name": "window", "type": "object", "required": true},
+                {"name": "health", "type": "object", "required": true},
+                {"name": "window_audit", "type": "object", "required": true},
+                {"name": "today_audit", "type": "object", "required": true},
+                {"name": "today_quality", "type": "object", "required": true},
+                {"name": "today_warnings", "type": "array<string>", "required": true},
+                {"name": "summary", "type": "object", "required": true},
+                {"name": "timeline", "type": "array<object>", "required": true},
+                {"name": "timeline_count", "type": "number", "required": true},
+                {"name": "timeline_returned", "type": "number", "required": true},
+                {"name": "timeline_truncated", "type": "boolean", "required": true},
+                {"name": "summary_limit", "type": "number", "required": true},
+                {"name": "summary_truncated", "type": "boolean", "required": true},
+                {"name": "sessions", "type": "array<object>|null", "required": true},
+                {"name": "include_sessions", "type": "boolean", "required": true},
+                {"name": "open_session", "type": "object|null", "required": true},
+                {"name": "paths", "type": "object", "required": true},
+            ],
+            "agent_quality_fields": [
+                "ready",
+                "coverage_ready",
+                "context_ready",
+                "status",
+                "score",
+                "issue_count",
+                "blocking_issue_count",
+                "context_issue_count",
+                "repair_commands",
+            ],
+            "agent_repair_plan_fields": [
+                "candidate_commands",
+                "actionable_commands",
+                "has_actionable_repairs",
+                "actionable_item_count",
+                "residual_item_count",
+                "items",
+            ],
             "read_commands": [
                 "agent",
                 "audit",
@@ -1161,7 +1206,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 1");
+        println!("schema_version: 2");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
@@ -1410,6 +1455,8 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
         window_end,
         repair_window,
     )?;
+    let report_ready = ready && repair_plan.actionable_commands.is_empty();
+    let action_required = !repair_plan.actionable_commands.is_empty();
     let summary = summarize_window(&sessions, window_start, window_end);
     let summary_truncated = summary_rows_truncated(&summary, args.summary_limit);
     let summary = limit_summary(summary, args.summary_limit);
@@ -1429,6 +1476,8 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
         let value = serde_json::json!({
             "generated_at": now,
             "ready": ready,
+            "report_ready": report_ready,
+            "action_required": action_required,
             "quality": quality,
             "repair_plan": repair_plan,
             "warnings": warnings,
@@ -1473,6 +1522,8 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
         print_json(&value)
     } else {
         println!("ready: {}", yes_no(ready));
+        println!("report_ready: {}", yes_no(report_ready));
+        println!("action_required: {}", yes_no(action_required));
         println!("quality_ready: {}", yes_no(quality.ready));
         println!("quality_score: {}", quality.score);
         println!("quality_status: {}", quality.status);
@@ -1747,6 +1798,9 @@ struct AgentQuality {
 struct AgentRepairPlan {
     candidate_commands: Vec<String>,
     actionable_commands: Vec<String>,
+    has_actionable_repairs: bool,
+    actionable_item_count: usize,
+    residual_item_count: usize,
     items: Vec<AgentRepairPlanItem>,
 }
 
@@ -1918,10 +1972,16 @@ fn agent_repair_plan(
         .filter(|item| item.actionable)
         .map(|item| item.command.clone())
         .collect();
+    let actionable_item_count = items.iter().filter(|item| item.actionable).count();
+    let residual_item_count = items.iter().filter(|item| !item.actionable).count();
+    let has_actionable_repairs = actionable_item_count > 0;
 
     Ok(AgentRepairPlan {
         candidate_commands,
         actionable_commands,
+        has_actionable_repairs,
+        actionable_item_count,
+        residual_item_count,
         items,
     })
 }
@@ -2407,10 +2467,55 @@ mod tests {
             plan.actionable_commands,
             vec!["activity_tracker reclassify --from 2026-06-03 --to 2026-06-03 --dry-run --json"]
         );
+        assert!(plan.has_actionable_repairs);
+        assert_eq!(plan.actionable_item_count, 1);
+        assert_eq!(plan.residual_item_count, 0);
         assert_eq!(item.reason, "uncategorized_sessions");
         assert_eq!(item.issue_count, 1);
         assert_eq!(item.repairable_count, 1);
         assert!(item.actionable);
+        Ok(())
+    }
+
+    #[test]
+    fn agent_repair_plan_counts_residual_context_warnings() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let date = parse_date("2026-06-03")?;
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let end = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing end"))?;
+        let entity = activity_tracker::ActiveEntity {
+            bundle_id: "company.thebrowser.dia".to_string(),
+            name: "Dia".to_string(),
+            title: None,
+            url: Some("https://app.slack.com/client/TF7GEHYHZ/dms".to_string()),
+            category: "Communication".to_string(),
+            activity_type: activity_tracker::ActivityType::Active,
+        };
+        let session = UsageSession::from_entity(&entity, start, end)
+            .ok_or_else(|| anyhow::anyhow!("missing session"))?;
+        let (window_start, window_end) = day_bounds(date)?;
+        store.append_session(&session)?;
+
+        let plan = agent_repair_plan(
+            &store,
+            &audit_with_counts(0, 0, 0, 1, 0, 0, 0),
+            Some(window_start),
+            Some(window_end),
+            AgentRepairWindow::Date(date),
+        )?;
+
+        assert!(!plan.has_actionable_repairs);
+        assert!(plan.actionable_commands.is_empty());
+        assert_eq!(plan.actionable_item_count, 0);
+        assert_eq!(plan.residual_item_count, 2);
+        assert_eq!(plan.items.len(), 2);
         Ok(())
     }
 }
