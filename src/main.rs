@@ -12,7 +12,7 @@ use activity_tracker::{
     LogStore, MacOsProbe, ProbeMissStabilizer, Result, TrackerError, TrackerState, UsageSession,
     audit_sessions, day_bounds, filter_sessions, format_seconds, install_launch_agent,
     legacy_data_dir, legacy_sessions_path, parse_date, service_status, service_status_report,
-    summarize_all, summarize_day, uninstall_launch_agent,
+    summarize_all, summarize_day, timeline_blocks, uninstall_launch_agent,
 };
 use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -40,6 +40,8 @@ enum Command {
     Day(DayArgs),
     /// Print one-day AI report with summary, sessions, checkpoint, and paths.
     Report(ReportArgs),
+    /// Print compact one-day timeline blocks. Defaults to today.
+    Timeline(TimelineArgs),
     /// Print raw sessions. Defaults to today.
     Logs(LogsArgs),
     /// Audit one-day log quality for gaps, overlaps, and invalid rows.
@@ -81,6 +83,13 @@ struct DayArgs {
 
 #[derive(Debug, Args)]
 struct ReportArgs {
+    date: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct TimelineArgs {
     date: Option<String>,
     #[arg(long)]
     json: bool,
@@ -209,6 +218,7 @@ fn run() -> Result<()> {
         Command::Track(args) => run_tracker(&store, args),
         Command::Day(args) => print_day(&store, args),
         Command::Report(args) => print_report(&store, args),
+        Command::Timeline(args) => print_timeline(&store, args),
         Command::Logs(args) => print_logs(&store, args),
         Command::Audit(args) => print_audit(&store, args),
         Command::Summary(args) => print_summary(&store, args),
@@ -331,6 +341,7 @@ fn print_report(store: &LogStore, args: ReportArgs) -> Result<()> {
     let sessions =
         store.sessions_for_day_with_open(date, now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
     let summary = summarize_day(&sessions, date)?;
+    let timeline = timeline_blocks(&sessions);
     let (day_start, day_end) = day_bounds(date)?;
     let includes_active_session = active_session
         .as_ref()
@@ -340,6 +351,7 @@ fn print_report(store: &LogStore, args: ReportArgs) -> Result<()> {
             "date": date,
             "generated_at": now,
             "summary": summary,
+            "timeline": timeline,
             "sessions": sessions,
             "active_session": active_session,
             "open_session": store.open_session_checkpoint()?,
@@ -357,6 +369,31 @@ fn print_report(store: &LogStore, args: ReportArgs) -> Result<()> {
     } else {
         print_summary_text(Some(date), &summary);
         print_session_rows(&sessions);
+        Ok(())
+    }
+}
+
+fn print_timeline(store: &LogStore, args: TimelineArgs) -> Result<()> {
+    let date = date_or_today(args.date.as_deref())?;
+    let sessions =
+        store.sessions_for_day_with_open(date, Local::now(), DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
+    let timeline = timeline_blocks(&sessions);
+    if args.json {
+        print_json(&timeline)
+    } else {
+        for block in timeline {
+            println!(
+                "{} -> {} | {} | {} | {} | {} | {} | {}",
+                block.start_time.format("%H:%M:%S"),
+                block.end_time.format("%H:%M:%S"),
+                format_seconds(block.duration_seconds),
+                block.activity_type,
+                block.category,
+                block.app_name,
+                block.domain.unwrap_or_default(),
+                block.title.unwrap_or_default()
+            );
+        }
         Ok(())
     }
 }

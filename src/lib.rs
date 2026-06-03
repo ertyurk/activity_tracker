@@ -194,6 +194,21 @@ pub struct ActivitySummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct TimelineBlock {
+    pub start_time: DateTime<Local>,
+    pub end_time: DateTime<Local>,
+    pub duration_seconds: f64,
+    pub activity_type: ActivityType,
+    pub category: String,
+    pub app_name: String,
+    pub bundle_id: String,
+    pub domain: Option<String>,
+    pub title: Option<String>,
+    pub url: Option<String>,
+    pub session_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ActivityAudit {
     pub session_count: usize,
     pub gap_count: usize,
@@ -1042,6 +1057,39 @@ pub fn audit_sessions(sessions: &[UsageSession], gap_threshold_seconds: f64) -> 
 }
 
 #[must_use]
+pub fn timeline_blocks(sessions: &[UsageSession]) -> Vec<TimelineBlock> {
+    let mut sorted = sessions.to_vec();
+    sorted.sort_by_key(|session| (session.start_time, session.end_time));
+    let mut blocks = Vec::new();
+
+    for session in sorted {
+        let domain = session.url.as_deref().and_then(domain_from_url);
+        if let Some(block) = blocks.last_mut()
+            && can_merge_timeline_block(block, &session, domain.as_deref())
+        {
+            merge_timeline_session(block, &session, domain);
+            continue;
+        }
+
+        blocks.push(TimelineBlock {
+            start_time: session.start_time,
+            end_time: session.end_time,
+            duration_seconds: session.duration_seconds,
+            activity_type: session.activity_type,
+            category: session.category,
+            app_name: session.app_name,
+            bundle_id: session.bundle_id,
+            domain,
+            title: session.title,
+            url: session.url,
+            session_count: 1,
+        });
+    }
+
+    blocks
+}
+
+#[must_use]
 pub fn filter_sessions(
     sessions: Vec<UsageSession>,
     app: Option<&str>,
@@ -1721,6 +1769,36 @@ fn invalid_session(session: &UsageSession) -> Option<AuditInvalidSession> {
     }
 
     None
+}
+
+fn can_merge_timeline_block(
+    block: &TimelineBlock,
+    session: &UsageSession,
+    domain: Option<&str>,
+) -> bool {
+    block.activity_type == session.activity_type
+        && block.category == session.category
+        && block.app_name == session.app_name
+        && block.bundle_id == session.bundle_id
+        && block.domain.as_deref() == domain
+        && seconds_between(block.end_time, session.start_time).is_none_or(|gap| gap <= 5.0)
+}
+
+fn merge_timeline_session(
+    block: &mut TimelineBlock,
+    session: &UsageSession,
+    domain: Option<String>,
+) {
+    block.end_time = max_datetime(block.end_time, session.end_time);
+    block.duration_seconds += session.duration_seconds;
+    block.domain = domain.or_else(|| block.domain.clone());
+    if session.title.is_some() {
+        block.title = session.title.clone();
+    }
+    if session.url.is_some() {
+        block.url = session.url.clone();
+    }
+    block.session_count += 1;
 }
 
 fn local_midnight(date: NaiveDate) -> Result<DateTime<Local>> {
@@ -2560,6 +2638,87 @@ mod tests {
                 .map(|row| row.reason.as_str()),
             Some("end_time_not_after_start_time")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn timeline_blocks_merge_adjacent_same_identity_sessions() -> AnyhowResult<()> {
+        let mut first = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing first start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing first end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing first"))?;
+        let mut second = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 1, 1)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing second start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 2, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing second end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing second"))?;
+        first.url = Some("https://github.com/org/a".to_string());
+        second.url = Some("https://github.com/org/b".to_string());
+        first.category = "Development".to_string();
+        second.category = "Development".to_string();
+
+        let blocks = timeline_blocks(&[first, second]);
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks.first().map(|block| block.session_count), Some(2));
+        assert_eq!(
+            blocks.first().and_then(|block| block.domain.as_deref()),
+            Some("github.com")
+        );
+        assert_eq!(
+            blocks.first().map(|block| block.duration_seconds),
+            Some(119.0)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn timeline_blocks_split_different_domains() -> AnyhowResult<()> {
+        let mut first = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing first start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing first end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing first"))?;
+        let mut second = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing second start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 2, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing second end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing second"))?;
+        first.url = Some("https://github.com/org/a".to_string());
+        second.url = Some("https://app.slack.com/client/example".to_string());
+
+        let blocks = timeline_blocks(&[first, second]);
+
+        assert_eq!(blocks.len(), 2);
         Ok(())
     }
 

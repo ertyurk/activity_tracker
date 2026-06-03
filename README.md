@@ -50,6 +50,7 @@ activity_tracker doctor --json
 activity_tracker service status --json
 activity_tracker day 2026-06-03 --json
 activity_tracker report 2026-06-03 --json
+activity_tracker timeline 2026-06-03 --json
 activity_tracker logs 2026-06-03 --json
 activity_tracker audit 2026-06-03 --json
 activity_tracker logs 2026-06-03 --domain github --json
@@ -65,6 +66,7 @@ activity_tracker repair-gaps --dry-run --json
 ```
 
 `report --json` is the preferred one-call payload for AI agents: it includes the day summary, raw sessions, current open-session checkpoint, provisional active session, and storage paths. `day`, `logs`, `summary`, and `report` include the active open session when it overlaps the query; exports stay based on completed sessions.
+`timeline --json` returns compact ordered blocks grouped by app/domain/category so agents can write reports without reading every raw session.
 `audit --json` reports log quality for a day: gaps above a configurable threshold, overlaps, invalid rows, and current open-session state.
 `service status --json` reports launchd load/running state and PID without requiring agents to parse `launchctl` text.
 `reclassify` recomputes categories from current app and browser-domain rules, useful after improving category mappings.

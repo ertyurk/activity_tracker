@@ -38,6 +38,7 @@ cargo run -- paths --json
 cargo run -- service status --json
 cargo run -- day 2026-06-03 --json
 cargo run -- report 2026-06-03 --json
+cargo run -- timeline 2026-06-03 --json
 cargo run -- audit 2026-06-03 --json
 cargo run -- logs 2026-06-03 --domain github --json
 cargo run -- logs 2026-06-03 --title project --json
