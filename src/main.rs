@@ -9,9 +9,9 @@ use std::time::Duration;
 use activity_tracker::{
     ActivityProbe, DEFAULT_IDLE_THRESHOLD_SECONDS, DEFAULT_INTERVAL_SECONDS,
     DEFAULT_PROBE_MISS_TOLERANCE, DEFAULT_RECENT_CHECKPOINT_SECONDS, LogStore, MacOsProbe,
-    ProbeMissStabilizer, Result, TrackerError, TrackerState, UsageSession, filter_sessions,
-    format_seconds, install_launch_agent, legacy_data_dir, legacy_sessions_path, parse_date,
-    service_status, summarize_all, summarize_day, uninstall_launch_agent,
+    ProbeMissStabilizer, Result, TrackerError, TrackerState, UsageSession, day_bounds,
+    filter_sessions, format_seconds, install_launch_agent, legacy_data_dir, legacy_sessions_path,
+    parse_date, service_status, summarize_all, summarize_day, uninstall_launch_agent,
 };
 use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -276,7 +276,8 @@ fn checkpoint_current_session(
 
 fn print_day(store: &LogStore, args: DayArgs) -> Result<()> {
     let date = date_or_today(args.date.as_deref())?;
-    let sessions = store.sessions_for_day(date)?;
+    let sessions =
+        store.sessions_for_day_with_open(date, Local::now(), DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
     let summary = summarize_day(&sessions, date)?;
     if args.json {
         print_json(&summary)
@@ -288,15 +289,24 @@ fn print_day(store: &LogStore, args: DayArgs) -> Result<()> {
 
 fn print_report(store: &LogStore, args: ReportArgs) -> Result<()> {
     let date = date_or_today(args.date.as_deref())?;
-    let sessions = store.sessions_for_day(date)?;
+    let now = Local::now();
+    let active_session = store.provisional_open_session(now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
+    let sessions =
+        store.sessions_for_day_with_open(date, now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
     let summary = summarize_day(&sessions, date)?;
+    let (day_start, day_end) = day_bounds(date)?;
+    let includes_active_session = active_session
+        .as_ref()
+        .is_some_and(|session| session.overlaps(day_start, day_end));
     if args.json {
         let value = serde_json::json!({
             "date": date,
-            "generated_at": Local::now(),
+            "generated_at": now,
             "summary": summary,
             "sessions": sessions,
+            "active_session": active_session,
             "open_session": store.open_session_checkpoint()?,
+            "includes_active_session": includes_active_session,
             "paths": {
                 "root": store.root(),
                 "sqlite": store.db_path(),
@@ -316,7 +326,8 @@ fn print_report(store: &LogStore, args: ReportArgs) -> Result<()> {
 
 fn print_logs(store: &LogStore, args: LogsArgs) -> Result<()> {
     let date = date_or_today(args.date.as_deref())?;
-    let sessions = store.sessions_for_day(date)?;
+    let sessions =
+        store.sessions_for_day_with_open(date, Local::now(), DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
     let sessions = filter_sessions(
         sessions,
         args.app.as_deref(),
@@ -352,7 +363,8 @@ fn print_session_rows(sessions: &[UsageSession]) {
 }
 
 fn print_summary(store: &LogStore, args: OutputArgs) -> Result<()> {
-    let sessions = store.load_sessions()?;
+    let sessions =
+        store.load_sessions_with_open(Local::now(), DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
     let summary = summarize_all(&sessions);
     if args.json {
         print_json(&summary)

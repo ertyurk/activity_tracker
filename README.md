@@ -60,7 +60,7 @@ activity_tracker export --date 2026-06-03 --format jsonl
 activity_tracker import-csv ~/Desktop/usage_stats.csv --dry-run --json
 ```
 
-`report --json` is the preferred one-call payload for AI agents: it includes the day summary, raw sessions, current open-session checkpoint, and storage paths.
+`report --json` is the preferred one-call payload for AI agents: it includes the day summary, raw sessions, current open-session checkpoint, provisional active session, and storage paths. `day`, `logs`, `summary`, and `report` include the active open session when it overlaps the query; exports stay based on completed sessions.
 
 No subcommand defaults to `track`, preserving the original simple run behavior.
 
@@ -118,7 +118,7 @@ Each JSONL record is one completed session:
 
 Idle sessions use `app_name: "Idle"`, `bundle_id: "local.activity_tracker.idle"`, `category: "Idle"`, and `activity_type: "idle"`.
 
-Day summaries include sessions overlapping that local day and clip cross-midnight durations to the requested day.
+Day summaries include sessions overlapping that local day and clip cross-midnight durations to the requested day. Live query commands include the current open session provisionally; persisted JSONL records only contain completed sessions.
 
 ## Service Commands
 

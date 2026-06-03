@@ -453,6 +453,32 @@ impl LogStore {
             .collect())
     }
 
+    pub fn load_sessions_with_open(
+        &self,
+        now: DateTime<Local>,
+        recent_gap_seconds: u64,
+    ) -> Result<Vec<UsageSession>> {
+        let mut sessions = self.load_sessions()?;
+        if let Some(session) = self.provisional_open_session(now, recent_gap_seconds)? {
+            sessions.push(session);
+        }
+        Ok(sessions)
+    }
+
+    pub fn sessions_for_day_with_open(
+        &self,
+        date: NaiveDate,
+        now: DateTime<Local>,
+        recent_gap_seconds: u64,
+    ) -> Result<Vec<UsageSession>> {
+        let (start, end) = day_bounds(date)?;
+        Ok(self
+            .load_sessions_with_open(now, recent_gap_seconds)?
+            .into_iter()
+            .filter(|session| session.overlaps(start, end))
+            .collect())
+    }
+
     pub fn write_csv(&self, path: &Path, sessions: &[UsageSession]) -> Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -576,6 +602,24 @@ impl LogStore {
     pub fn open_session_checkpoint(&self) -> Result<Option<SessionCheckpoint>> {
         self.ensure_database_ready()?;
         self.load_open_session_checkpoint()
+    }
+
+    pub fn provisional_open_session(
+        &self,
+        now: DateTime<Local>,
+        recent_gap_seconds: u64,
+    ) -> Result<Option<UsageSession>> {
+        self.ensure_database_ready()?;
+        let Some(checkpoint) = self.load_open_session_checkpoint()? else {
+            return Ok(None);
+        };
+
+        let end_time = recovered_checkpoint_end(&checkpoint, now, recent_gap_seconds);
+        Ok(UsageSession::from_entity(
+            &checkpoint.entity,
+            checkpoint.start_time,
+            end_time,
+        ))
     }
 
     pub fn recover_open_session(
@@ -1834,6 +1878,37 @@ mod tests {
             Some(last_seen)
         );
         assert!(store.open_session_checkpoint()?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn sessions_for_day_with_open_includes_provisional_session() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let last_seen = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing last_seen"))?;
+        let now = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 1, 10)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing now"))?;
+
+        store.checkpoint_session(&entity(), start, last_seen)?;
+        let sessions = store.sessions_for_day_with_open(parse_date("2026-06-03")?, now, 30)?;
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions.first().map(|session| session.start_time),
+            Some(start)
+        );
+        assert_eq!(sessions.first().map(|session| session.end_time), Some(now));
+        assert!(store.load_sessions()?.is_empty());
+        assert!(store.open_session_checkpoint()?.is_some());
         Ok(())
     }
 

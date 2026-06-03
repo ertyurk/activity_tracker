@@ -33,6 +33,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Keep storage/query code testable without macOS permissions.
 - Persist each completed session immediately to SQLite and mirror it to JSONL; CSV is derived.
 - Maintain the SQLite `open_session` heartbeat so crash/restart recovery does not lose the active span.
+- Include the provisional open session in live query commands (`day`, `logs`, `summary`, `report`) when it overlaps the query.
 - Preserve current session through short active-app probe misses; only create gaps after repeated misses.
 - Record idle as `activity_type: "idle"` with `bundle_id: "local.activity_tracker.idle"` once HID idle time crosses threshold.
 - Day math must include overlapping sessions and clip summary duration to local day bounds.
