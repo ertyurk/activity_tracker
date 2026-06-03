@@ -45,6 +45,14 @@ pub enum TrackerError {
     InvalidTimestamp(String),
     #[error("invalid date range `{from}`..`{to}`; --to must be same day or after --from")]
     InvalidDateRange { from: String, to: String },
+    #[error(
+        "invalid time range `{since}`..`{until}`; --until must be same instant or after --since"
+    )]
+    InvalidTimeRange { since: String, until: String },
+    #[error("invalid duration `{0}`; expected positive whole minutes")]
+    InvalidDuration(String),
+    #[error("conflicting query window arguments: {0}")]
+    ConflictingQueryWindowArgs(&'static str),
     #[error("CSV is missing required column `{0}`")]
     MissingCsvColumn(&'static str),
     #[error("invalid activity type `{0}`")]
@@ -208,6 +216,26 @@ pub struct TimelineBlock {
     pub title: Option<String>,
     pub url: Option<String>,
     pub session_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct QueryTimeWindowInput<'a> {
+    pub from: Option<&'a str>,
+    pub to: Option<&'a str>,
+    pub since: Option<&'a str>,
+    pub until: Option<&'a str>,
+    pub last_minutes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct QueryTimeWindow {
+    pub from: Option<NaiveDate>,
+    pub to: Option<NaiveDate>,
+    pub since: Option<DateTime<Local>>,
+    pub until: Option<DateTime<Local>>,
+    pub last_minutes: Option<u64>,
+    pub start: Option<DateTime<Local>>,
+    pub end: Option<DateTime<Local>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1173,6 +1201,79 @@ pub fn filter_sessions_by_time_window(
     filtered
 }
 
+pub fn query_time_window(
+    input: QueryTimeWindowInput<'_>,
+    now: DateTime<Local>,
+) -> Result<QueryTimeWindow> {
+    if input.last_minutes.is_some()
+        && (input.from.is_some()
+            || input.to.is_some()
+            || input.since.is_some()
+            || input.until.is_some())
+    {
+        return Err(TrackerError::ConflictingQueryWindowArgs(
+            "--last-minutes cannot be combined with --from, --to, --since, or --until",
+        ));
+    }
+    if input.from.is_some() && input.since.is_some() {
+        return Err(TrackerError::ConflictingQueryWindowArgs(
+            "--from and --since both set a query start",
+        ));
+    }
+    if input.to.is_some() && input.until.is_some() {
+        return Err(TrackerError::ConflictingQueryWindowArgs(
+            "--to and --until both set a query end",
+        ));
+    }
+
+    let from_date = input.from.map(parse_date).transpose()?;
+    let to_date = input.to.map(parse_date).transpose()?;
+    if let (Some(from_date), Some(to_date)) = (from_date, to_date)
+        && to_date < from_date
+    {
+        return Err(TrackerError::InvalidDateRange {
+            from: input.from.unwrap_or_default().to_string(),
+            to: input.to.unwrap_or_default().to_string(),
+        });
+    }
+
+    let since = input.since.map(parse_local_datetime).transpose()?;
+    let until = input.until.map(parse_local_datetime).transpose()?;
+    if let (Some(since), Some(until)) = (since, until)
+        && until < since
+    {
+        return Err(TrackerError::InvalidTimeRange {
+            since: input.since.unwrap_or_default().to_string(),
+            until: input.until.unwrap_or_default().to_string(),
+        });
+    }
+
+    let last_window = input
+        .last_minutes
+        .map(|minutes| last_minutes_bounds(minutes, now))
+        .transpose()?;
+    let start = match (last_window, since, from_date) {
+        (Some((start, _)), _, _) | (None, Some(start), _) => Some(start),
+        (None, None, Some(date)) => Some(day_bounds(date)?.0),
+        (None, None, None) => None,
+    };
+    let end = match (last_window, until, to_date) {
+        (Some((_, end)), _, _) | (None, Some(end), _) => Some(end),
+        (None, None, Some(date)) => Some(day_bounds(date)?.1),
+        (None, None, None) => None,
+    };
+
+    Ok(QueryTimeWindow {
+        from: from_date,
+        to: to_date,
+        since,
+        until,
+        last_minutes: input.last_minutes,
+        start,
+        end,
+    })
+}
+
 pub fn parse_date(input: &str) -> Result<NaiveDate> {
     NaiveDate::parse_from_str(input, "%Y-%m-%d")
         .map_err(|_| TrackerError::InvalidDate(input.to_string()))
@@ -1761,6 +1862,18 @@ fn idle_start(
     }
     let bounded = idle_seconds.floor().clamp(0.0, i64::MAX as f64) as i64;
     Some(observed_at - TimeDelta::seconds(bounded))
+}
+
+fn last_minutes_bounds(
+    minutes: u64,
+    now: DateTime<Local>,
+) -> Result<(DateTime<Local>, DateTime<Local>)> {
+    if minutes == 0 {
+        return Err(TrackerError::InvalidDuration(minutes.to_string()));
+    }
+    let minutes =
+        i64::try_from(minutes).map_err(|_| TrackerError::InvalidDuration(minutes.to_string()))?;
+    Ok((now - TimeDelta::minutes(minutes), now))
 }
 
 fn max_datetime(a: DateTime<Local>, b: DateTime<Local>) -> DateTime<Local> {
@@ -2840,6 +2953,115 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(titles, vec!["overlapping", "inside"]);
+        Ok(())
+    }
+
+    #[test]
+    fn query_time_window_uses_date_bounds() -> AnyhowResult<()> {
+        let now = Local
+            .with_ymd_and_hms(2026, 6, 3, 12, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing now"))?;
+        let window = query_time_window(
+            QueryTimeWindowInput {
+                from: Some("2026-06-03"),
+                to: Some("2026-06-04"),
+                ..QueryTimeWindowInput::default()
+            },
+            now,
+        )?;
+        let (expected_start, _) = day_bounds(parse_date("2026-06-03")?)?;
+        let (_, expected_end) = day_bounds(parse_date("2026-06-04")?)?;
+
+        assert_eq!(window.start, Some(expected_start));
+        assert_eq!(window.end, Some(expected_end));
+        Ok(())
+    }
+
+    #[test]
+    fn query_time_window_uses_precise_timestamps() -> AnyhowResult<()> {
+        let now = Local
+            .with_ymd_and_hms(2026, 6, 3, 12, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing now"))?;
+        let since = "2026-06-03T08:00:00+02:00";
+        let until = "2026-06-03T09:00:00+02:00";
+        let window = query_time_window(
+            QueryTimeWindowInput {
+                since: Some(since),
+                until: Some(until),
+                ..QueryTimeWindowInput::default()
+            },
+            now,
+        )?;
+
+        assert_eq!(window.start, Some(parse_local_datetime(since)?));
+        assert_eq!(window.end, Some(parse_local_datetime(until)?));
+        Ok(())
+    }
+
+    #[test]
+    fn query_time_window_uses_last_minutes() -> AnyhowResult<()> {
+        let now = Local
+            .with_ymd_and_hms(2026, 6, 3, 12, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing now"))?;
+        let window = query_time_window(
+            QueryTimeWindowInput {
+                last_minutes: Some(90),
+                ..QueryTimeWindowInput::default()
+            },
+            now,
+        )?;
+
+        assert_eq!(window.start, Some(now - TimeDelta::minutes(90)));
+        assert_eq!(window.end, Some(now));
+        Ok(())
+    }
+
+    #[test]
+    fn query_time_window_rejects_conflicts_and_bad_ranges() -> AnyhowResult<()> {
+        let now = Local
+            .with_ymd_and_hms(2026, 6, 3, 12, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing now"))?;
+        let conflict = query_time_window(
+            QueryTimeWindowInput {
+                from: Some("2026-06-03"),
+                last_minutes: Some(15),
+                ..QueryTimeWindowInput::default()
+            },
+            now,
+        );
+        let bad_date = query_time_window(
+            QueryTimeWindowInput {
+                from: Some("2026-06-04"),
+                to: Some("2026-06-03"),
+                ..QueryTimeWindowInput::default()
+            },
+            now,
+        );
+        let bad_time = query_time_window(
+            QueryTimeWindowInput {
+                since: Some("2026-06-03T09:00:00+02:00"),
+                until: Some("2026-06-03T08:00:00+02:00"),
+                ..QueryTimeWindowInput::default()
+            },
+            now,
+        );
+
+        assert!(matches!(
+            conflict,
+            Err(TrackerError::ConflictingQueryWindowArgs(_))
+        ));
+        assert!(matches!(
+            bad_date,
+            Err(TrackerError::InvalidDateRange { .. })
+        ));
+        assert!(matches!(
+            bad_time,
+            Err(TrackerError::InvalidTimeRange { .. })
+        ));
         Ok(())
     }
 

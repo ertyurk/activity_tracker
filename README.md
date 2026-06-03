@@ -53,6 +53,8 @@ activity_tracker day 2026-06-03 --json
 activity_tracker report 2026-06-03 --json
 activity_tracker timeline 2026-06-03 --json
 activity_tracker query --from 2026-06-03 --to 2026-06-03 --domain github --json
+activity_tracker query --since 2026-06-03T08:00:00+02:00 --until 2026-06-03T09:00:00+02:00 --json
+activity_tracker query --last-minutes 120 --json
 activity_tracker query --category Development --limit 50 --json
 activity_tracker logs 2026-06-03 --json
 activity_tracker audit 2026-06-03 --json
@@ -68,7 +70,7 @@ activity_tracker reclassify --dry-run --json
 activity_tracker repair-gaps --dry-run --json
 ```
 
-`report --json` is the preferred one-call daily payload for AI agents: it includes the day summary, raw sessions, current open-session checkpoint, provisional active session, and storage paths. `query --json` is the preferred cross-day/all-history search payload: it accepts optional `--from` and `--to` local dates plus the same app/title/category/domain/activity-type filters as `logs`, and returns summary, compact timeline, raw sessions, filters, and open checkpoint.
+`report --json` is the preferred one-call daily payload for AI agents: it includes the day summary, raw sessions, current open-session checkpoint, provisional active session, and storage paths. `query --json` is the preferred cross-day/all-history search payload: it accepts optional `--from`/`--to` local dates, precise RFC3339 `--since`/`--until` timestamps, or `--last-minutes` for auto-report windows, plus the same app/title/category/domain/activity-type filters as `logs`, and returns summary, compact timeline, raw sessions, filters, and open checkpoint.
 `day`, `logs`, `query`, `summary`, and `report` include the active open session when it overlaps the query; exports stay based on completed sessions.
 `timeline --json` returns compact ordered blocks grouped by app/domain/category so agents can write reports without reading every raw session.
 `audit --json` reports log quality for a day: gaps above a configurable threshold, overlaps, invalid rows, and current open-session state.
@@ -134,7 +136,7 @@ Each JSONL record is one completed session:
 Idle sessions use `app_name: "Idle"`, `bundle_id: "local.activity_tracker.idle"`, `category: "Idle"`, and `activity_type: "idle"`.
 Repaired gap sessions use `app_name: "Untracked"`, `bundle_id: "local.activity_tracker.untracked"`, `category: "Untracked"`, and `activity_type: "untracked"`.
 
-Day summaries include sessions overlapping that local day and clip cross-midnight durations to the requested day. Range queries include sessions overlapping the optional `[from midnight, day after to midnight)` local-date window. Live query commands include the current open session provisionally; persisted JSONL records only contain completed sessions.
+Day summaries include sessions overlapping that local day and clip cross-midnight durations to the requested day. Range queries include sessions overlapping the optional `[from midnight, day after to midnight)` local-date window, precise RFC3339 timestamp windows, or last-N-minute windows. Live query commands include the current open session provisionally; persisted JSONL records only contain completed sessions.
 
 ## Service Commands
 

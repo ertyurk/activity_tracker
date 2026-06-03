@@ -41,6 +41,8 @@ cargo run -- day 2026-06-03 --json
 cargo run -- report 2026-06-03 --json
 cargo run -- timeline 2026-06-03 --json
 cargo run -- query --from 2026-06-03 --to 2026-06-03 --domain github --json
+cargo run -- query --since 2026-06-03T08:00:00+02:00 --until 2026-06-03T09:00:00+02:00 --json
+cargo run -- query --last-minutes 120 --json
 cargo run -- query --category Development --limit 50 --json
 cargo run -- audit 2026-06-03 --json
 cargo run -- logs 2026-06-03 --domain github --json

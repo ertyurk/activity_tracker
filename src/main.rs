@@ -9,12 +9,13 @@ use std::time::Duration;
 use activity_tracker::{
     ActivityProbe, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS, DEFAULT_IDLE_THRESHOLD_SECONDS,
     DEFAULT_INTERVAL_SECONDS, DEFAULT_PROBE_MISS_TOLERANCE, DEFAULT_RECENT_CHECKPOINT_SECONDS,
-    LogStore, MacOsProbe, ProbeMissStabilizer, Result, TrackerError, TrackerState, UsageSession,
-    audit_sessions, day_bounds, filter_sessions, filter_sessions_by_time_window, format_seconds,
-    install_launch_agent, legacy_data_dir, legacy_sessions_path, parse_date, service_status,
-    service_status_report, summarize_all, summarize_day, timeline_blocks, uninstall_launch_agent,
+    LogStore, MacOsProbe, ProbeMissStabilizer, QueryTimeWindowInput, Result, TrackerError,
+    TrackerState, UsageSession, audit_sessions, day_bounds, filter_sessions,
+    filter_sessions_by_time_window, format_seconds, install_launch_agent, legacy_data_dir,
+    legacy_sessions_path, parse_date, query_time_window, service_status, service_status_report,
+    summarize_all, summarize_day, timeline_blocks, uninstall_launch_agent,
 };
-use chrono::{DateTime, Local, NaiveDate};
+use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use tracing_subscriber::EnvFilter;
 
@@ -103,6 +104,12 @@ struct QueryArgs {
     from: Option<String>,
     #[arg(long)]
     to: Option<String>,
+    #[arg(long)]
+    since: Option<String>,
+    #[arg(long)]
+    until: Option<String>,
+    #[arg(long)]
+    last_minutes: Option<u64>,
     #[arg(long)]
     app: Option<String>,
     #[arg(long)]
@@ -424,8 +431,17 @@ fn print_timeline(store: &LogStore, args: TimelineArgs) -> Result<()> {
 }
 
 fn print_query(store: &LogStore, args: QueryArgs) -> Result<()> {
-    let window = query_window(args.from.as_deref(), args.to.as_deref())?;
     let now = Local::now();
+    let window = query_time_window(
+        QueryTimeWindowInput {
+            from: args.from.as_deref(),
+            to: args.to.as_deref(),
+            since: args.since.as_deref(),
+            until: args.until.as_deref(),
+            last_minutes: args.last_minutes,
+        },
+        now,
+    )?;
     let sessions = store.load_sessions_with_open(now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
     let sessions = filter_sessions_by_time_window(sessions, window.start, window.end);
     let sessions = filter_sessions(
@@ -445,6 +461,9 @@ fn print_query(store: &LogStore, args: QueryArgs) -> Result<()> {
             "generated_at": now,
             "from": window.from,
             "to": window.to,
+            "since": window.since,
+            "until": window.until,
+            "last_minutes": window.last_minutes,
             "window_start": window.start,
             "window_end": window.end,
             "filters": {
@@ -768,41 +787,6 @@ fn write_jsonl(path: &PathBuf, sessions: &[UsageSession]) -> Result<()> {
 
 fn date_or_today(input: Option<&str>) -> Result<NaiveDate> {
     input.map_or_else(|| Ok(Local::now().date_naive()), parse_date)
-}
-
-#[derive(Debug)]
-struct QueryWindow {
-    from: Option<NaiveDate>,
-    to: Option<NaiveDate>,
-    start: Option<DateTime<Local>>,
-    end: Option<DateTime<Local>>,
-}
-
-fn query_window(from: Option<&str>, to: Option<&str>) -> Result<QueryWindow> {
-    let from_date = from.map(parse_date).transpose()?;
-    let to_date = to.map(parse_date).transpose()?;
-    if let (Some(from_date), Some(to_date)) = (from_date, to_date)
-        && to_date < from_date
-    {
-        return Err(TrackerError::InvalidDateRange {
-            from: from.unwrap_or_default().to_string(),
-            to: to.unwrap_or_default().to_string(),
-        });
-    }
-
-    let start = from_date
-        .map(|date| day_bounds(date).map(|(start, _)| start))
-        .transpose()?;
-    let end = to_date
-        .map(|date| day_bounds(date).map(|(_, end)| end))
-        .transpose()?;
-
-    Ok(QueryWindow {
-        from: from_date,
-        to: to_date,
-        start,
-        end,
-    })
 }
 
 fn default_export_path(
