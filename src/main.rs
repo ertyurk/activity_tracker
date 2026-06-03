@@ -416,6 +416,13 @@ fn main() -> ExitCode {
         Ok(cli) => cli,
         Err(error) => return exit_with_cli_error(error, json_requested),
     };
+    if json_requires_subcommand(&cli) {
+        print_json_error(
+            "missing_command",
+            "--json requires an explicit subcommand; use `activity_tracker track` for foreground tracking",
+        );
+        return ExitCode::FAILURE;
+    }
     exit_with_result(run(cli), json_requested)
 }
 
@@ -430,6 +437,10 @@ where
 {
     args.into_iter()
         .any(|arg| arg.as_ref() == OsStr::new("--json"))
+}
+
+fn json_requires_subcommand(cli: &Cli) -> bool {
+    cli.json && cli.command.is_none()
 }
 
 fn exit_with_result(result: Result<()>, json_requested: bool) -> ExitCode {
@@ -1250,12 +1261,13 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         "io",
         "json",
         "json_line",
+        "missing_command",
         "missing_csv_column",
         "sqlite",
     ];
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 18,
+            "schema_version": 19,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1270,6 +1282,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "logs": store.logs_dir(),
             },
             "global_args": ["--data-dir", "--json"],
+            "global_json_requires_subcommand": true,
             "defaults": {
                 "track_interval_seconds": DEFAULT_INTERVAL_SECONDS,
                 "idle_threshold_seconds": DEFAULT_IDLE_THRESHOLD_SECONDS,
@@ -1534,7 +1547,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 18");
+        println!("schema_version: 19");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
@@ -3169,6 +3182,16 @@ mod tests {
                 ..
             }
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn global_json_without_subcommand_is_rejected() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from(["activity_tracker", "--json"])?;
+        assert!(json_requires_subcommand(&cli));
+
+        let plain = Cli::try_parse_from(["activity_tracker"])?;
+        assert!(!json_requires_subcommand(&plain));
         Ok(())
     }
 

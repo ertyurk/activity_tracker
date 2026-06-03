@@ -52,6 +52,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - `doctor --json` should keep setup diagnostics machine-readable and non-fatal for active-app or idle probe failures; expose probe status/error fields, launchd service binary/config validation, storage verification, and hints instead of exiting before agents can inspect the payload.
 - Commands invoked with `--json` should emit a machine-readable error envelope on runtime failure (`ok: false`, `error.code`, `error.message`) instead of forcing agents to scrape stderr.
 - Global `--json` before subcommands should work the same as command-local `--json` for JSON-capable commands.
+- Global `--json` without a subcommand should return `missing_command` instead of starting the foreground tracker loop.
 - CLI output should support plain text for humans and `--json` for agents; quality commands should expose both time coverage and context richness.
 
 ## Rust Rules

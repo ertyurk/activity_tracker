@@ -101,34 +101,54 @@ activity_tracker repair-context --last-minutes 120 --dry-run --json
 activity_tracker repair-mirror --json
 ```
 
-`agent --json` is the preferred first call for internal AI/reporting tools: it returns service readiness, storage verification, `report_ready`, `action_required`, a repair plan with actionable commands, a window-scoped `quality` gate with score/status/scoped candidate repair commands, actionable/residual item counts, freshness, warnings, window audit with bounded quality issue samples, today's audit/quality for background context, bounded summary/timeline context, open checkpoint, and paths. It defaults to the last 120 minutes, top 12 summary rows, and the 20 most recent timeline blocks; pass a date for one day, tune `--summary-limit`/`--timeline-limit`, or add `--include-sessions` when a tool needs raw sessions.
-`agent.report_ready` requires the background service, service binary/config, freshness, coverage, and full storage verification to be clean. If JSONL or CSV derived storage is broken while SQLite is healthy, `agent.repair_plan.actionable_commands` includes `activity_tracker repair-mirror --json`.
-For rolling `agent --last-minutes` windows, the window audit also treats uncovered leading/trailing spans inside the requested window as gaps, so auto-report tools can detect partial coverage even when no two stored rows are separated.
-`report --json` is the preferred full daily payload for AI agents: it includes the day summary, raw sessions, current open-session checkpoint, provisional active session, and storage paths. `query --json` is the preferred cross-day/all-history search payload: it accepts optional `--from`/`--to` local dates, precise RFC3339 `--since`/`--until` timestamps, or `--last-minutes` for auto-report windows, plus the same app/title/url/text/category/domain/activity-type filters as `logs`, and returns summary, compact timeline, raw sessions, filters, and open checkpoint.
-`day`, `logs`, `query`, `summary`, and `report` include the active open session when it overlaps the query; exports stay based on completed sessions. `--text` searches across app, bundle, title, URL, domain, category, and activity type when agents need a broad recall query. `query` and `logs` accept `--order asc|desc`; use `--order desc --limit N` for newest matching rows.
-Windowed summaries and timelines are clipped to the requested day/range/last-minutes bounds so auto reports do not overcount sessions that started before the report window. Raw session arrays keep original persisted bounds for audit/debug context.
-`timeline --json` returns compact ordered blocks grouped by app/domain/category so agents can write reports without reading every raw session.
-`inventory --json` returns windowed app, domain, category, and activity-type facets with clipped seconds, percentages, session counts, first/last seen timestamps, and latest title/URL context for agents or SwiftUI filter pickers.
-`audit --json` reports log quality for a day or explicit window: gaps above a configurable threshold, overlaps, invalid rows, missing titles, browser sessions missing URLs, browser blank tabs, suspicious browser title/URL mismatches, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, bounded quality issue samples, and current open-session state. With `--last-minutes`, `--since`/`--until`, or `--from`/`--to`, audit uses the same indexed window query as `query`; explicit windows include leading/trailing uncovered spans as gaps. Known browser blank tabs are canonicalized as `about:newtab` for new sessions.
-`health --json` is the service substrate check for agents: launchd state, persisted service binary/argument validation, storage freshness, storage verification, latest observed activity age, open checkpoint, paths, and today's audit/quality counts and breakdowns.
-`doctor --json` is the setup diagnostic payload: writable storage, osascript availability, active-app probe status/error, idle probe status/error, launchd service binary/config state, storage verification, paths, and permission/service hints. Probe failures are reported as fields instead of making the whole command unusable.
-`now --json` is the cheapest current-state poll for SwiftUI/menu-bar clients: service running/config state, freshness, checkpoint recency, current provisional session, open checkpoint, latest completed session, and paths.
-`verify --json` runs storage integrity checks: SQLite integrity, SQLite session count, JSONL mirror readability/content sync, and default CSV readability/content sync.
-`service status --json` reports launchd load/running state, PID, program, arguments, and log paths without requiring agents to parse `launchctl` text.
-`service logs --json` reports bounded launchd stdout/stderr tails with paths so agents can inspect service errors without shelling into log files.
-`schema --json` reports the stable CLI/data contract: storage paths, default thresholds, activity types, known categories, session fields, agent fields, storage verification fields, export args/output fields, service install/uninstall args and output fields, service install binary requirements, supported window args, filters, read commands, repair commands, service commands, JSON error codes, quality issue kinds, and local-privacy flags.
-`--json` can be passed either on a subcommand (`doctor --json`) or globally before the subcommand (`--json doctor`) for tool harnesses that attach common flags first.
-When a runtime command invoked with `--json` fails, it emits a JSON error envelope with `ok: false`, `generated_at`, `error.code`, and `error.message` so tool harnesses can branch without scraping stderr.
-`reclassify` recomputes categories from current app and browser-domain rules, useful after improving category mappings.
-`reclassify`, `repair-gaps`, `repair-titles`, `repair-urls`, and `repair-context` accept optional `--from`/`--to`, `--since`/`--until`, or `--last-minutes` windows so an agent can dry-run and apply repairs to the same audited window instead of touching all history.
-`repair-gaps` converts audited gaps in completed logs into explicit `activity_type: "untracked"` sessions so missing time stays visible instead of disappearing from totals.
-`repair-titles` backfills native-app title gaps with the app name when macOS exposes only app-level context, and repairs browser titles only when the exact URL has one unique observed title elsewhere in the log.
-`repair-urls` canonicalizes safe URL-only fixes such as known browser blank-tab URLs and missing URLs surrounded by blank-tab samples to `about:newtab`.
-`repair-context` repairs high-confidence browser title/URL mismatches and missing browser context from immediate neighbor evidence or a unique clean exact-URL title observation, converts unrecoverable all-missing browser context rows and short unrecoverable mixed-context or title-missing rows to untracked time, then recomputes category.
-`repair-mirror` rewrites the JSONL mirror and CSV view from SQLite, using SQLite as the source of truth when mirror verification fails.
-`export --json` writes the requested CSV/JSONL export and returns the path, date scope, format, and session count for tool harnesses that need an artifact pointer.
+Recommended first call for internal AI/reporting tools:
 
-No subcommand defaults to `track`, preserving the original simple run behavior.
+- `agent --json` returns readiness, `report_ready`, `action_required`, repair plan, window-scoped quality gate, warnings, window audit, today background audit, bounded summary/timeline context, open checkpoint, and paths.
+- Defaults: last 120 minutes, top 12 summary rows, and 20 recent timeline blocks.
+- Use a date for one-day reports, tune `--summary-limit`/`--timeline-limit`, or add `--include-sessions` when a tool needs raw sessions.
+
+Readiness and quality:
+
+- `agent.report_ready` requires service binary/config, freshness, coverage, and full storage verification to be clean.
+- If JSONL or CSV derived storage is broken while SQLite is healthy, `agent.repair_plan.actionable_commands` includes `activity_tracker repair-mirror --json`.
+- Rolling `agent --last-minutes` windows treat uncovered leading/trailing spans as gaps so auto-report tools can detect partial coverage.
+- `audit --json` reports gaps, overlaps, invalid rows, missing titles, missing browser URLs, blank browser tabs, suspicious browser title/URL mismatches, untracked/idle counts, uncategorized counts, quality breakdowns, bounded samples, and current open-session state.
+
+History reads:
+
+- `report --json` is the preferred full daily payload: day summary, raw sessions, current checkpoint, provisional active session, and storage paths.
+- `query --json` is the preferred cross-day/all-history search payload: local date windows, precise RFC3339 windows, rolling `--last-minutes`, filters, summary, compact timeline, raw sessions, and open checkpoint.
+- `day`, `logs`, `query`, `summary`, and `report` include the active open session when it overlaps the query.
+- Exports stay based on completed sessions.
+- `--text` searches app, bundle, title, URL, domain, category, and activity type.
+- `query` and `logs` accept `--order asc|desc`; use `--order desc --limit N` for newest matching rows.
+- Windowed summaries and timelines are clipped to the requested day/range/last-minutes bounds; raw session arrays keep original persisted bounds for audit/debug context.
+- `timeline --json` returns compact ordered blocks grouped by app/domain/category.
+- `inventory --json` returns windowed app, domain, category, and activity-type facets for agents or SwiftUI filter pickers.
+
+Service/setup payloads:
+
+- `health --json` is the service substrate check: launchd state, persisted service binary/argument validation, storage freshness, storage verification, latest activity age, open checkpoint, paths, and today's audit/quality breakdowns.
+- `doctor --json` is the setup diagnostic payload: writable storage, osascript availability, active-app probe status/error, idle probe status/error, launchd service binary/config state, storage verification, paths, and permission/service hints.
+- `now --json` is the cheap current-state poll for SwiftUI/menu-bar clients.
+- `verify --json` checks SQLite integrity plus JSONL and default CSV readability/count/content sync.
+- `service status --json` reports launchd load/running state, PID, program, arguments, and log paths.
+- `service logs --json` reports bounded launchd stdout/stderr tails.
+- `schema --json` reports the stable CLI/data contract.
+- `--json` can be passed command-locally (`doctor --json`) or globally before the subcommand (`--json doctor`).
+- Global `--json` requires an explicit subcommand; plain no-subcommand mode still defaults to foreground `track` for humans.
+- Runtime failures under `--json` emit `{ "ok": false, "error": { "code", "message" } }`.
+
+Repair/export hooks:
+
+- `reclassify` recomputes categories from current app and browser-domain rules.
+- `reclassify`, `repair-gaps`, `repair-titles`, `repair-urls`, and `repair-context` accept optional `--from`/`--to`, `--since`/`--until`, or `--last-minutes` windows.
+- `repair-gaps` converts audited gaps into explicit `activity_type: "untracked"` sessions.
+- `repair-titles` backfills native-app title gaps and exact-URL browser title gaps.
+- `repair-urls` canonicalizes safe URL-only fixes such as known browser blank tabs.
+- `repair-context` repairs high-confidence browser context mismatches/missing fields and converts short unrecoverable context rows to untracked time.
+- `repair-mirror` rewrites JSONL and CSV mirrors from SQLite.
+- `export --json` writes CSV/JSONL and returns path, date scope, format, and session count.
 
 ## Storage
 
