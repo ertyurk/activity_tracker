@@ -33,6 +33,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo run -- doctor
 cargo run -- paths --json
 cargo run -- day 2026-06-03 --json
+cargo run -- report 2026-06-03 --json
 cargo run -- logs 2026-06-03 --domain github --json
 cargo run -- logs 2026-06-03 --title project --json
 cargo run -- logs 2026-06-03 --activity-type idle --json

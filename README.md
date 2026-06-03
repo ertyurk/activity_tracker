@@ -48,6 +48,7 @@ macOS will likely ask for Accessibility permission for the terminal or binary ho
 activity_tracker paths --json
 activity_tracker doctor --json
 activity_tracker day 2026-06-03 --json
+activity_tracker report 2026-06-03 --json
 activity_tracker logs 2026-06-03 --json
 activity_tracker logs 2026-06-03 --domain github --json
 activity_tracker logs 2026-06-03 --app "Code" --json
@@ -58,6 +59,8 @@ activity_tracker export --date 2026-06-03 --format csv
 activity_tracker export --date 2026-06-03 --format jsonl
 activity_tracker import-csv ~/Desktop/usage_stats.csv --dry-run --json
 ```
+
+`report --json` is the preferred one-call payload for AI agents: it includes the day summary, raw sessions, current open-session checkpoint, and storage paths.
 
 No subcommand defaults to `track`, preserving the original simple run behavior.
 

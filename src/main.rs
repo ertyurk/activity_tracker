@@ -37,6 +37,8 @@ enum Command {
     Track(TrackArgs),
     /// Print one-day summary. Defaults to today.
     Day(DayArgs),
+    /// Print one-day AI report with summary, sessions, checkpoint, and paths.
+    Report(ReportArgs),
     /// Print raw sessions. Defaults to today.
     Logs(LogsArgs),
     /// Print all-time summary.
@@ -65,6 +67,13 @@ struct TrackArgs {
 
 #[derive(Debug, Args)]
 struct DayArgs {
+    date: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct ReportArgs {
     date: Option<String>,
     #[arg(long)]
     json: bool,
@@ -165,6 +174,7 @@ fn run() -> Result<()> {
     match cli.command.unwrap_or(Command::Track(TrackArgs::default())) {
         Command::Track(args) => run_tracker(&store, args),
         Command::Day(args) => print_day(&store, args),
+        Command::Report(args) => print_report(&store, args),
         Command::Logs(args) => print_logs(&store, args),
         Command::Summary(args) => print_summary(&store, args),
         Command::Export(args) => export_sessions(&store, args),
@@ -276,6 +286,34 @@ fn print_day(store: &LogStore, args: DayArgs) -> Result<()> {
     }
 }
 
+fn print_report(store: &LogStore, args: ReportArgs) -> Result<()> {
+    let date = date_or_today(args.date.as_deref())?;
+    let sessions = store.sessions_for_day(date)?;
+    let summary = summarize_day(&sessions, date)?;
+    if args.json {
+        let value = serde_json::json!({
+            "date": date,
+            "generated_at": Local::now(),
+            "summary": summary,
+            "sessions": sessions,
+            "open_session": store.open_session_checkpoint()?,
+            "paths": {
+                "root": store.root(),
+                "sqlite": store.db_path(),
+                "sessions_jsonl": store.sessions_path(),
+                "csv": store.csv_path(),
+                "exports": store.exports_dir(),
+                "logs": store.logs_dir(),
+            },
+        });
+        print_json(&value)
+    } else {
+        print_summary_text(Some(date), &summary);
+        print_session_rows(&sessions);
+        Ok(())
+    }
+}
+
 fn print_logs(store: &LogStore, args: LogsArgs) -> Result<()> {
     let date = date_or_today(args.date.as_deref())?;
     let sessions = store.sessions_for_day(date)?;
@@ -292,21 +330,24 @@ fn print_logs(store: &LogStore, args: LogsArgs) -> Result<()> {
     if args.json {
         print_json(&sessions)
     } else {
-        for session in sessions {
-            let url = session.url.unwrap_or_default();
-            println!(
-                "{} -> {} | {} | {} | {} | {} | {} | {}",
-                session.start_time.format("%H:%M:%S"),
-                session.end_time.format("%H:%M:%S"),
-                format_seconds(session.duration_seconds),
-                session.activity_type,
-                session.category,
-                session.app_name,
-                session.title.unwrap_or_default(),
-                url
-            );
-        }
+        print_session_rows(&sessions);
         Ok(())
+    }
+}
+
+fn print_session_rows(sessions: &[UsageSession]) {
+    for session in sessions {
+        println!(
+            "{} -> {} | {} | {} | {} | {} | {} | {}",
+            session.start_time.format("%H:%M:%S"),
+            session.end_time.format("%H:%M:%S"),
+            format_seconds(session.duration_seconds),
+            session.activity_type,
+            session.category,
+            session.app_name,
+            session.title.as_deref().unwrap_or_default(),
+            session.url.as_deref().unwrap_or_default()
+        );
     }
 }
 
