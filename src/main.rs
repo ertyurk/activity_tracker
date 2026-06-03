@@ -1147,7 +1147,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     let now = Local::now();
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 12,
+            "schema_version": 13,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1211,6 +1211,10 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
             "service_status_fields": ["label", "loaded", "running", "pid", "program", "arguments", "stdout_path", "stderr_path", "raw", "error"],
             "service_config_fields": [
                 "ok",
+                "program",
+                "argument_binary",
+                "program_matches_argument",
+                "program_exists",
                 "expected_data_dir",
                 "data_dir",
                 "data_dir_matches",
@@ -1392,7 +1396,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 12");
+        println!("schema_version: 13");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
@@ -1568,6 +1572,10 @@ fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
 #[derive(Debug, Clone, Serialize)]
 struct ServiceConfigStatus {
     ok: bool,
+    program: Option<PathBuf>,
+    argument_binary: Option<PathBuf>,
+    program_matches_argument: bool,
+    program_exists: bool,
     expected_data_dir: PathBuf,
     data_dir: Option<PathBuf>,
     data_dir_matches: bool,
@@ -1583,6 +1591,10 @@ fn service_config_status(
     store: &LogStore,
     service: &activity_tracker::ServiceStatusReport,
 ) -> ServiceConfigStatus {
+    let program = service.program.as_ref().map(PathBuf::from);
+    let argument_binary = service.arguments.first().map(PathBuf::from);
+    let program_matches_argument = program.as_deref() == argument_binary.as_deref();
+    let program_exists = program.as_deref().is_some_and(Path::exists);
     let data_dir = service_argument_value(&service.arguments, "--data-dir").map(PathBuf::from);
     let data_dir_matches = data_dir.as_deref() == Some(store.root());
     let interval_seconds = service_argument_value(&service.arguments, "--interval-seconds")
@@ -1596,6 +1608,8 @@ fn service_config_status(
     let interval_arg_valid = interval_seconds.is_some();
     let idle_threshold_arg_valid = idle_threshold_seconds.is_some();
     let ok = service.running
+        && program_matches_argument
+        && program_exists
         && data_dir_matches
         && track_command_present
         && quiet_present
@@ -1604,6 +1618,10 @@ fn service_config_status(
 
     ServiceConfigStatus {
         ok,
+        program,
+        argument_binary,
+        program_matches_argument,
+        program_exists,
         expected_data_dir: store.root().to_path_buf(),
         data_dir,
         data_dir_matches,
@@ -2875,8 +2893,10 @@ mod tests {
         running: bool,
     ) -> activity_tracker::ServiceStatusReport {
         let mut report = service_report(running);
+        let binary = "/bin/sh".to_string();
+        report.program = Some(binary.clone());
         report.arguments = vec![
-            "/tmp/activity_tracker".to_string(),
+            binary,
             "--data-dir".to_string(),
             store.root().display().to_string(),
             "track".to_string(),
@@ -2892,6 +2912,10 @@ mod tests {
     fn service_config(ok: bool) -> ServiceConfigStatus {
         ServiceConfigStatus {
             ok,
+            program: Some(PathBuf::from("/bin/sh")),
+            argument_binary: Some(PathBuf::from("/bin/sh")),
+            program_matches_argument: ok,
+            program_exists: ok,
             expected_data_dir: PathBuf::from("/tmp/activity_tracker"),
             data_dir: Some(PathBuf::from("/tmp/activity_tracker")),
             data_dir_matches: ok,
@@ -3132,13 +3156,15 @@ mod tests {
         let store = LogStore::new(dir.path().to_path_buf());
         let good = service_config_status(&store, &service_report_for_store(&store, true));
         assert!(good.ok);
+        assert!(good.program_matches_argument);
+        assert!(good.program_exists);
         assert!(good.data_dir_matches);
         assert_eq!(good.interval_seconds, Some(2));
         assert_eq!(good.idle_threshold_seconds, Some(300));
 
         let mut wrong = service_report_for_store(&store, true);
         wrong.arguments = vec![
-            "/tmp/activity_tracker".to_string(),
+            "/bin/sh".to_string(),
             "--data-dir".to_string(),
             "/tmp/other-root".to_string(),
             "track".to_string(),
@@ -3151,6 +3177,21 @@ mod tests {
         let wrong = service_config_status(&store, &wrong);
         assert!(!wrong.ok);
         assert!(!wrong.data_dir_matches);
+        Ok(())
+    }
+
+    #[test]
+    fn service_config_status_requires_program_match() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let mut report = service_report_for_store(&store, true);
+        report.program = Some("/bin/echo".to_string());
+
+        let config = service_config_status(&store, &report);
+
+        assert!(!config.ok);
+        assert!(!config.program_matches_argument);
+        assert!(config.program_exists);
         Ok(())
     }
 
