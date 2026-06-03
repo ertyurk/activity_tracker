@@ -2499,6 +2499,9 @@ pub fn category_for_url(url: &str) -> Option<&'static str> {
         || host_matches(&host, "workers.dev")
         || host_matches(&host, "pages.dev")
         || host_matches(&host, "firebase.google.com")
+        || host_matches(&host, "console.cloud.google.com")
+        || host_matches(&host, "console.hetzner.com")
+        || host_matches(&host, "jsonviewer.stack.hu")
         || host_matches(&host, "traefik.io")
         || host_matches(&host, "d2lang.com")
         || host_matches(&host, "leanscale.com")
@@ -2514,6 +2517,7 @@ pub fn category_for_url(url: &str) -> Option<&'static str> {
     }
     if host_matches(&host, "figma.com")
         || host_matches(&host, "mermaid.ai")
+        || host_matches(&host, "diagrams.net")
         || host_matches(&host, "ilograph.com")
     {
         return Some("Design");
@@ -6702,10 +6706,20 @@ mod tests {
                 "https://console.firebase.google.com/project/example",
                 "Development",
             ),
+            (
+                "https://console.cloud.google.com/compute/instancesAdd",
+                "Development",
+            ),
+            (
+                "https://console.hetzner.com/projects/123/servers/create",
+                "Development",
+            ),
+            ("https://jsonviewer.stack.hu/", "Development"),
             ("https://traefik.io/traefik", "Development"),
             ("https://d2lang.com/tour/intro", "Development"),
             ("https://chatgpt.com/c/example", "AI"),
             ("https://www.macaly.com/projects/example", "AI"),
+            ("https://app.diagrams.net/#G1bsiAsz5f", "Design"),
             ("https://www.reddit.com/r/rust", "Social"),
             ("https://starlabs.sg/blog/example", "Research"),
             (
