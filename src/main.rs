@@ -1147,7 +1147,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     let now = Local::now();
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 11,
+            "schema_version": 12,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1220,6 +1220,22 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "interval_arg_valid",
                 "idle_threshold_seconds",
                 "idle_threshold_arg_valid",
+            ],
+            "now_fields": [
+                "generated_at",
+                "ready",
+                "service_running",
+                "service_pid",
+                "service_config",
+                "fresh",
+                "checkpoint_recent",
+                "latest_observed_at",
+                "latest_observed_age_seconds",
+                "session_count",
+                "active_session",
+                "open_session",
+                "last_completed_session",
+                "paths",
             ],
             "json_error_fields": [
                 "ok",
@@ -1376,7 +1392,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 11");
+        println!("schema_version: 12");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
@@ -1397,6 +1413,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
 fn print_now(store: &LogStore, args: OutputArgs) -> Result<()> {
     let now = Local::now();
     let service = service_status_report();
+    let service_config = service_config_status(store, &service);
     let storage = store.storage_health(now, DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS)?;
     let active_session = store.provisional_open_session(now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
     let recent_checkpoint_ms = i64::try_from(DEFAULT_RECENT_CHECKPOINT_SECONDS)
@@ -1407,7 +1424,7 @@ fn print_now(store: &LogStore, args: OutputArgs) -> Result<()> {
             .saturating_sub(checkpoint.last_seen_at.timestamp_millis())
             <= recent_checkpoint_ms
     });
-    let ready = service.running && storage.fresh && checkpoint_recent;
+    let ready = now_ready(&service, &service_config, &storage, checkpoint_recent);
 
     if args.json {
         let value = serde_json::json!({
@@ -1415,6 +1432,7 @@ fn print_now(store: &LogStore, args: OutputArgs) -> Result<()> {
             "ready": ready,
             "service_running": service.running,
             "service_pid": service.pid,
+            "service_config": service_config,
             "fresh": storage.fresh,
             "checkpoint_recent": checkpoint_recent,
             "latest_observed_at": storage.latest_observed_at,
@@ -1436,6 +1454,7 @@ fn print_now(store: &LogStore, args: OutputArgs) -> Result<()> {
     } else {
         println!("ready: {}", yes_no(ready));
         println!("service_running: {}", yes_no(service.running));
+        println!("service_config_ok: {}", yes_no(service_config.ok));
         if let Some(pid) = service.pid {
             println!("service_pid: {pid}");
         }
@@ -1606,6 +1625,15 @@ fn service_argument_value<'a>(arguments: &'a [String], key: &str) -> Option<&'a 
         previous_was_key = argument == key;
     }
     None
+}
+
+fn now_ready(
+    service: &activity_tracker::ServiceStatusReport,
+    service_config: &ServiceConfigStatus,
+    storage: &activity_tracker::StorageHealth,
+    checkpoint_recent: bool,
+) -> bool {
+    service.running && service_config.ok && storage.fresh && checkpoint_recent
 }
 
 fn health_ready(
@@ -3124,6 +3152,19 @@ mod tests {
         assert!(!wrong.ok);
         assert!(!wrong.data_dir_matches);
         Ok(())
+    }
+
+    #[test]
+    fn now_ready_requires_service_config() {
+        let service = service_report(true);
+        let config = service_config(true);
+        let storage = storage_health(true);
+
+        assert!(now_ready(&service, &config, &storage, true));
+        assert!(!now_ready(&service, &service_config(false), &storage, true));
+        assert!(!now_ready(&service_report(false), &config, &storage, true));
+        assert!(!now_ready(&service, &config, &storage_health(false), true));
+        assert!(!now_ready(&service, &config, &storage, false));
     }
 
     #[test]

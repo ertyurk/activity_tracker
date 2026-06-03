@@ -79,7 +79,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Keep `health --json` gated on full storage verification so agents do not call a broken mirror/CSV setup healthy.
 - Keep `inventory --json` window-aware and backed by the same indexed query window; use it for filter menus instead of scanning raw history in callers.
 - Keep `schema --json` stable enough for SwiftUI/tool harness discovery; update it whenever commands, filters, agent fields, storage verification fields, session fields, defaults, or quality issue kinds change.
-- Keep `now --json` cheap and suitable for frequent SwiftUI/menu-bar polling.
+- Keep `now --json` cheap and suitable for frequent SwiftUI/menu-bar polling; `ready` should require service config validation.
 - Keep `agent --json` explicit about report readiness: `report_ready` should be true only when service config/freshness/storage verification/window coverage are ready and no actionable repair remains; `action_required` should reflect actionable repairs, while residual non-repairable warnings stay visible in the repair plan and quality fields.
 - If JSONL/CSV derived storage verification fails while SQLite is healthy, expose `activity_tracker repair-mirror --json` in `agent.repair_plan.actionable_commands`.
 - Use app identity plus browser URL domains for categories; reclassify stored sessions when mappings change.

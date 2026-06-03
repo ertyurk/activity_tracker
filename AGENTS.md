@@ -29,7 +29,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - `query` and `logs` should support `--order asc|desc`; agents should use `--order desc --limit N` for latest matching rows.
 - `inventory --json` should provide windowed app/domain/category/activity-type facets for SwiftUI filter menus and AI planning without raw-log scans.
 - `schema --json` should expose CLI/data-contract capabilities, including agent output and storage verification fields, for SwiftUI and tool harness setup.
-- `now --json` should remain a cheap current-activity poll for SwiftUI/menu-bar clients.
+- `now --json` should remain a cheap current-activity poll for SwiftUI/menu-bar clients and require service config validation for `ready`.
 - `verify --json` should prove SQLite integrity plus JSONL and default CSV readability/count/content sync.
 - `health --json` should include service config validation and storage verification, requiring both for `healthy`.
 - `repair-mirror --json` should rebuild JSONL mirror and CSV view from SQLite source of truth when verification fails.
