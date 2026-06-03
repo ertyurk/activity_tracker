@@ -12,25 +12,29 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 ## Query Workflow
 
 1. Run `cargo run -- paths --json` to discover storage paths.
-2. Use `cargo run -- health --json` before reports to verify launchd state, storage freshness, open checkpoint, paths, and today's audit counts.
-3. Use `cargo run -- report YYYY-MM-DD --json` for the one-call AI payload: summary, sessions, open checkpoint, and paths.
-4. Use `cargo run -- timeline YYYY-MM-DD --json` for compact ordered blocks grouped by app/domain/category.
-5. Use `cargo run -- audit YYYY-MM-DD --json` to inspect log quality gaps, overlaps, invalid rows, missing titles, browser sessions missing URLs, browser blank tabs, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, and open checkpoint state.
-6. Use `cargo run -- query --from YYYY-MM-DD --to YYYY-MM-DD --json` for cross-day search payloads with summary, compact timeline, sessions, filters, and open checkpoint.
-7. Use `cargo run -- query --since RFC3339 --until RFC3339 --json` for precise report windows, or `cargo run -- query --last-minutes N --json` for rolling auto-report windows.
-8. Omit window args on `query` for all-history search.
-9. Use `cargo run -- day YYYY-MM-DD --json` for daily summaries.
-10. Use `cargo run -- logs YYYY-MM-DD --json` for one-day raw sessions.
-11. Narrow `query` or `logs` with `--app`, `--title`, `--category`, `--domain`, `--activity-type active|idle|untracked`, and `--limit`.
-12. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
-13. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
-14. After category rule changes, run `cargo run -- reclassify --dry-run --json`, then rerun without `--dry-run`.
-15. After auditing gaps, run `cargo run -- repair-gaps --dry-run --json`, then rerun without `--dry-run` to insert explicit untracked sessions.
+2. Use `cargo run -- agent --json` as the first AI/reporting hook: readiness, warnings, today's audit, bounded summary, most recent timeline context, open checkpoint, and paths.
+3. Use `cargo run -- agent --last-minutes N --json` for rolling auto-report windows, or `cargo run -- agent YYYY-MM-DD --json` for compact day context.
+4. Add `--include-sessions` to `agent` only when raw sessions are necessary.
+5. Use `cargo run -- health --json` before reports when you need the full launchd/storage health payload.
+6. Use `cargo run -- report YYYY-MM-DD --json` for the full daily AI payload: summary, sessions, open checkpoint, and paths.
+7. Use `cargo run -- timeline YYYY-MM-DD --json` for compact ordered blocks grouped by app/domain/category.
+8. Use `cargo run -- audit YYYY-MM-DD --json` to inspect log quality gaps, overlaps, invalid rows, missing titles, browser sessions missing URLs, browser blank tabs, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, and open checkpoint state.
+9. Use `cargo run -- query --from YYYY-MM-DD --to YYYY-MM-DD --json` for cross-day search payloads with summary, compact timeline, sessions, filters, and open checkpoint.
+10. Use `cargo run -- query --since RFC3339 --until RFC3339 --json` for precise report windows, or `cargo run -- query --last-minutes N --json` for rolling auto-report windows.
+11. Omit window args on `query` for all-history search.
+12. Use `cargo run -- day YYYY-MM-DD --json` for daily summaries.
+13. Use `cargo run -- logs YYYY-MM-DD --json` for one-day raw sessions.
+14. Narrow `query` or `logs` with `--app`, `--title`, `--category`, `--domain`, `--activity-type active|idle|untracked`, and `--limit`.
+15. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
+16. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
+17. After category rule changes, run `cargo run -- reclassify --dry-run --json`, then rerun without `--dry-run`.
+18. After auditing gaps, run `cargo run -- repair-gaps --dry-run --json`, then rerun without `--dry-run` to insert explicit untracked sessions.
 
 ## Operations
 
 - Health check: `cargo run -- doctor --json`
 - Service substrate health: `cargo run -- health --json`
+- AI/reporting hook: `cargo run -- agent --json`
 - Foreground tracking: `cargo run -- track`
 - Background install: `cargo run --release -- service install`
 - Background status: `cargo run -- service status --json`
@@ -52,6 +56,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Repair real gaps as `activity_type: "untracked"` with `bundle_id: "local.activity_tracker.untracked"` rather than hiding missing time.
 - Day math must include overlapping sessions and clip summary duration to local day bounds.
 - Add `--json` for new read commands so AI tools can consume them.
+- Keep `agent --json` compact by default; it bounds summary/timeline rows and raw sessions should require `--include-sessions`.
 - Keep local privacy: no network sync unless explicitly requested.
 - Validate with `cargo fmt`, `cargo test`, and `cargo clippy --all-targets --all-features -- -D warnings`.
 

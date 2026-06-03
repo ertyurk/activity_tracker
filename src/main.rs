@@ -19,6 +19,10 @@ use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use tracing_subscriber::EnvFilter;
 
+const DEFAULT_AGENT_LAST_MINUTES: u64 = 120;
+const DEFAULT_AGENT_TIMELINE_LIMIT: usize = 20;
+const DEFAULT_AGENT_SUMMARY_LIMIT: usize = 12;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "activity_tracker",
@@ -63,6 +67,8 @@ enum Command {
     Paths(OutputArgs),
     /// Print collector health, freshness, service state, and today audit.
     Health(HealthArgs),
+    /// Print compact AI-agent readiness and recent report context.
+    Agent(AgentArgs),
     /// Check macOS permissions, probes, and writable storage.
     Doctor(OutputArgs),
     /// Install, uninstall, or inspect launchd background service.
@@ -162,6 +168,21 @@ struct HealthArgs {
     stale_threshold_seconds: u64,
     #[arg(long, default_value_t = DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS)]
     gap_threshold_seconds: f64,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentArgs {
+    date: Option<String>,
+    #[arg(long)]
+    last_minutes: Option<u64>,
+    #[arg(long, default_value_t = DEFAULT_AGENT_TIMELINE_LIMIT)]
+    timeline_limit: usize,
+    #[arg(long, default_value_t = DEFAULT_AGENT_SUMMARY_LIMIT)]
+    summary_limit: usize,
+    #[arg(long)]
+    include_sessions: bool,
     #[arg(long)]
     json: bool,
 }
@@ -272,6 +293,7 @@ fn run() -> Result<()> {
         Command::RepairGaps(args) => repair_gaps(&store, args),
         Command::Paths(args) => print_paths(&store, args),
         Command::Health(args) => print_health(&store, args),
+        Command::Agent(args) => print_agent(&store, args),
         Command::Doctor(args) => doctor(&store, args),
         Command::Service(command) => run_service(&store, command),
     }
@@ -762,6 +784,141 @@ fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
     }
 }
 
+fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
+    if args.date.is_some() && args.last_minutes.is_some() {
+        return Err(TrackerError::ConflictingQueryWindowArgs(
+            "agent date cannot be combined with --last-minutes",
+        ));
+    }
+
+    let now = Local::now();
+    let today = now.date_naive();
+    let service = service_status_report();
+    let storage = store.storage_health(now, DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS)?;
+    let today_sessions =
+        store.sessions_for_day_with_open(today, now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
+    let today_audit = audit_sessions(&today_sessions, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS);
+    let ready = agent_ready(&service, &storage, &today_audit);
+    let warnings = agent_warnings(&service, &storage, &today_audit);
+
+    let (window_mode, window_date, window_last_minutes, window_start, window_end, sessions) =
+        if let Some(date_input) = args.date.as_deref() {
+            let date = parse_date(date_input)?;
+            let (start, end) = day_bounds(date)?;
+            (
+                "day",
+                Some(date),
+                None,
+                Some(start),
+                Some(end),
+                store.sessions_for_day_with_open(date, now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?,
+            )
+        } else {
+            let last_minutes = args.last_minutes.unwrap_or(DEFAULT_AGENT_LAST_MINUTES);
+            let window = query_time_window(
+                QueryTimeWindowInput {
+                    from: None,
+                    to: None,
+                    since: None,
+                    until: None,
+                    last_minutes: Some(last_minutes),
+                },
+                now,
+            )?;
+            (
+                "last_minutes",
+                None,
+                Some(last_minutes),
+                window.start,
+                window.end,
+                store.sessions_in_window_with_open(
+                    window.start,
+                    window.end,
+                    now,
+                    DEFAULT_RECENT_CHECKPOINT_SECONDS,
+                )?,
+            )
+        };
+
+    let summary = summarize_all(&sessions);
+    let summary_truncated = summary_rows_truncated(&summary, args.summary_limit);
+    let summary = limit_summary(summary, args.summary_limit);
+    let timeline = timeline_blocks(&sessions);
+    let timeline_count = timeline.len();
+    let timeline = limit_timeline_blocks(timeline, args.timeline_limit);
+    let timeline_truncated = timeline_count > timeline.len();
+    let sessions_value = if args.include_sessions {
+        serde_json::to_value(&sessions)?
+    } else {
+        serde_json::Value::Null
+    };
+
+    if args.json {
+        let value = serde_json::json!({
+            "generated_at": now,
+            "ready": ready,
+            "warnings": warnings,
+            "window": {
+                "mode": window_mode,
+                "date": window_date,
+                "last_minutes": window_last_minutes,
+                "start": window_start,
+                "end": window_end,
+            },
+            "health": {
+                "service_running": service.running,
+                "service_pid": service.pid,
+                "fresh": storage.fresh,
+                "latest_observed_at": storage.latest_observed_at,
+                "latest_observed_age_seconds": storage.latest_observed_age_seconds,
+                "session_count": storage.session_count,
+            },
+            "today_audit": today_audit,
+            "summary": summary,
+            "timeline": timeline,
+            "timeline_count": timeline_count,
+            "timeline_returned": timeline.len(),
+            "timeline_truncated": timeline_truncated,
+            "summary_limit": args.summary_limit,
+            "summary_truncated": summary_truncated,
+            "sessions": sessions_value,
+            "include_sessions": args.include_sessions,
+            "open_session": store.open_session_checkpoint()?,
+            "paths": {
+                "root": store.root(),
+                "sqlite": store.db_path(),
+                "sessions_jsonl": store.sessions_path(),
+                "csv": store.csv_path(),
+                "exports": store.exports_dir(),
+                "logs": store.logs_dir(),
+            },
+        });
+        print_json(&value)
+    } else {
+        println!("ready: {}", yes_no(ready));
+        println!("service_running: {}", yes_no(service.running));
+        println!("fresh: {}", yes_no(storage.fresh));
+        println!("window: {window_mode}");
+        if let Some(date) = window_date {
+            println!("date: {date}");
+        }
+        if let Some(minutes) = window_last_minutes {
+            println!("last_minutes: {minutes}");
+        }
+        println!("sessions: {}", summary.session_count);
+        println!("timeline_blocks: {}/{}", timeline.len(), timeline_count);
+        if warnings.is_empty() {
+            println!("warnings: none");
+        } else {
+            println!("warnings:");
+            for warning in warnings {
+                println!("  {warning}");
+            }
+        }
+        Ok(())
+    }
+}
+
 fn doctor(store: &LogStore, args: OutputArgs) -> Result<()> {
     store.ensure_dirs()?;
     let checkpoint = store.open_session_checkpoint()?;
@@ -880,6 +1037,93 @@ fn print_quality_rows(label: &str, rows: &[activity_tracker::AuditQualityRow]) {
     for row in rows {
         println!("  {} | {}", row.name, row.count);
     }
+}
+
+fn agent_ready(
+    service: &activity_tracker::ServiceStatusReport,
+    storage: &activity_tracker::StorageHealth,
+    audit: &activity_tracker::ActivityAudit,
+) -> bool {
+    service.running
+        && storage.fresh
+        && audit.gap_count == 0
+        && audit.overlap_count == 0
+        && audit.invalid_session_count == 0
+}
+
+fn agent_warnings(
+    service: &activity_tracker::ServiceStatusReport,
+    storage: &activity_tracker::StorageHealth,
+    audit: &activity_tracker::ActivityAudit,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if !service.running {
+        warnings.push("service_not_running".to_string());
+    }
+    if !storage.fresh {
+        warnings.push("storage_stale".to_string());
+    }
+    if audit.gap_count > 0 {
+        warnings.push(format!("gaps_detected:{}", audit.gap_count));
+    }
+    if audit.overlap_count > 0 {
+        warnings.push(format!("overlaps_detected:{}", audit.overlap_count));
+    }
+    if audit.invalid_session_count > 0 {
+        warnings.push(format!("invalid_sessions:{}", audit.invalid_session_count));
+    }
+    if audit.uncategorized_session_count > 0 {
+        warnings.push(format!(
+            "uncategorized:{}",
+            audit.uncategorized_session_count
+        ));
+    }
+    if audit.browser_missing_url_count > 0 {
+        warnings.push(format!(
+            "browser_missing_urls:{}",
+            audit.browser_missing_url_count
+        ));
+    }
+    if audit.missing_title_count > 0 {
+        warnings.push(format!("missing_titles:{}", audit.missing_title_count));
+    }
+    warnings
+}
+
+fn limit_timeline_blocks(
+    timeline: Vec<activity_tracker::TimelineBlock>,
+    limit: usize,
+) -> Vec<activity_tracker::TimelineBlock> {
+    let skip = timeline.len().saturating_sub(limit);
+    timeline.into_iter().skip(skip).collect()
+}
+
+fn summary_rows_truncated(summary: &activity_tracker::ActivitySummary, limit: usize) -> bool {
+    summary.by_category.len() > limit
+        || summary.by_activity_type.len() > limit
+        || summary.by_app.len() > limit
+        || summary.by_domain.len() > limit
+}
+
+fn limit_summary(
+    summary: activity_tracker::ActivitySummary,
+    limit: usize,
+) -> activity_tracker::ActivitySummary {
+    activity_tracker::ActivitySummary {
+        session_count: summary.session_count,
+        total_seconds: summary.total_seconds,
+        by_activity_type: limit_summary_rows(summary.by_activity_type, limit),
+        by_category: limit_summary_rows(summary.by_category, limit),
+        by_app: limit_summary_rows(summary.by_app, limit),
+        by_domain: limit_summary_rows(summary.by_domain, limit),
+    }
+}
+
+fn limit_summary_rows(
+    rows: Vec<activity_tracker::SummaryRow>,
+    limit: usize,
+) -> Vec<activity_tracker::SummaryRow> {
+    rows.into_iter().take(limit).collect()
 }
 
 fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {

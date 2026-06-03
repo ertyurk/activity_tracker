@@ -36,6 +36,8 @@ cargo fmt
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 cargo run -- health --json
+cargo run -- agent --json
+cargo run -- agent --last-minutes 240 --json
 cargo run -- doctor
 cargo run -- paths --json
 cargo run -- service status --json

@@ -49,6 +49,9 @@ macOS will likely ask for Accessibility permission for the terminal or binary ho
 
 ```bash
 activity_tracker paths --json
+activity_tracker agent --json
+activity_tracker agent --last-minutes 240 --json
+activity_tracker agent 2026-06-03 --json
 activity_tracker health --json
 activity_tracker doctor --json
 activity_tracker service status --json
@@ -73,7 +76,8 @@ activity_tracker reclassify --dry-run --json
 activity_tracker repair-gaps --dry-run --json
 ```
 
-`report --json` is the preferred one-call daily payload for AI agents: it includes the day summary, raw sessions, current open-session checkpoint, provisional active session, and storage paths. `query --json` is the preferred cross-day/all-history search payload: it accepts optional `--from`/`--to` local dates, precise RFC3339 `--since`/`--until` timestamps, or `--last-minutes` for auto-report windows, plus the same app/title/category/domain/activity-type filters as `logs`, and returns summary, compact timeline, raw sessions, filters, and open checkpoint.
+`agent --json` is the preferred first call for internal AI/reporting tools: it returns service readiness, freshness, warnings, today's audit, bounded summary/timeline context, open checkpoint, and paths. It defaults to the last 120 minutes, top 12 summary rows, and the 20 most recent timeline blocks; pass a date for one day, tune `--summary-limit`/`--timeline-limit`, or add `--include-sessions` when a tool needs raw sessions.
+`report --json` is the preferred full daily payload for AI agents: it includes the day summary, raw sessions, current open-session checkpoint, provisional active session, and storage paths. `query --json` is the preferred cross-day/all-history search payload: it accepts optional `--from`/`--to` local dates, precise RFC3339 `--since`/`--until` timestamps, or `--last-minutes` for auto-report windows, plus the same app/title/category/domain/activity-type filters as `logs`, and returns summary, compact timeline, raw sessions, filters, and open checkpoint.
 `day`, `logs`, `query`, `summary`, and `report` include the active open session when it overlaps the query; exports stay based on completed sessions.
 `timeline --json` returns compact ordered blocks grouped by app/domain/category so agents can write reports without reading every raw session.
 `audit --json` reports log quality for a day: gaps above a configurable threshold, overlaps, invalid rows, missing titles, browser sessions missing URLs, browser blank tabs, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, and current open-session state. Known browser blank tabs are canonicalized as `about:newtab` for new sessions.
