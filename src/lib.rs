@@ -3121,7 +3121,7 @@ pub fn install_launch_agent(
 
     let stdout = store.logs_dir().join("launchd.out.log");
     let stderr = store.logs_dir().join("launchd.err.log");
-    let plist = launch_agent_plist(binary, &stdout, &stderr, config);
+    let plist = launch_agent_plist(binary, store.root(), &stdout, &stderr, config);
 
     if load {
         let _bootout_result = launchctl_bootout();
@@ -3242,6 +3242,7 @@ fn parse_service_arguments(raw: &str) -> Vec<String> {
 #[must_use]
 pub fn launch_agent_plist(
     binary: &Path,
+    data_dir: &Path,
     stdout: &Path,
     stderr: &Path,
     config: LaunchAgentConfig,
@@ -3258,6 +3259,8 @@ pub fn launch_agent_plist(
   <key>ProgramArguments</key>
   <array>
     <string>{binary}</string>
+    <string>--data-dir</string>
+    <string>{data_dir}</string>
     <string>track</string>
     <string>--quiet</string>
     <string>--interval-seconds</string>
@@ -3278,6 +3281,7 @@ pub fn launch_agent_plist(
 "#,
         label = SERVICE_LABEL,
         binary = xml_escape(&binary.display().to_string()),
+        data_dir = xml_escape(&data_dir.display().to_string()),
         stdout = xml_escape(&stdout.display().to_string()),
         stderr = xml_escape(&stderr.display().to_string()),
         interval_seconds = interval_seconds,
@@ -7333,6 +7337,7 @@ mod tests {
     fn launch_agent_plist_contains_track_command() {
         let plist = launch_agent_plist(
             Path::new("/tmp/activity_tracker"),
+            Path::new("/tmp/activity data"),
             Path::new("/tmp/out.log"),
             Path::new("/tmp/err.log"),
             LaunchAgentConfig {
@@ -7340,6 +7345,8 @@ mod tests {
                 idle_threshold_seconds: 120,
             },
         );
+        assert!(plist.contains("<string>--data-dir</string>"));
+        assert!(plist.contains("<string>/tmp/activity data</string>"));
         assert!(plist.contains("<string>track</string>"));
         assert!(plist.contains("<string>--quiet</string>"));
         assert!(plist.contains("<string>--interval-seconds</string>"));

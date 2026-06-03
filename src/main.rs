@@ -1147,7 +1147,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     let now = Local::now();
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 8,
+            "schema_version": 9,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1207,6 +1207,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
             "window_args": ["--from", "--to", "--since", "--until", "--last-minutes"],
             "filters": ["--app", "--title", "--url", "--text", "--category", "--domain", "--activity-type", "--limit", "--order"],
             "service_install_args": ["--bin", "--interval-seconds", "--idle-threshold-seconds", "--no-load"],
+            "service_install_persisted_args": ["--data-dir", "--interval-seconds", "--idle-threshold-seconds"],
             "service_status_fields": ["label", "loaded", "running", "pid", "program", "arguments", "stdout_path", "stderr_path", "raw", "error"],
             "json_error_fields": [
                 "ok",
@@ -1349,7 +1350,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 8");
+        println!("schema_version: 9");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());

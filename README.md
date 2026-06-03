@@ -194,7 +194,7 @@ activity_tracker service logs --lines 80 --json
 activity_tracker service uninstall
 ```
 
-`service install` writes `~/Library/LaunchAgents/com.local.activity-tracker.plist`, loads it, and starts `activity_tracker track --quiet` with persisted interval and idle-threshold arguments.
+`service install` writes `~/Library/LaunchAgents/com.local.activity-tracker.plist`, loads it, and starts `activity_tracker --data-dir <root> track --quiet` with persisted data root, interval, and idle-threshold arguments.
 
 Default idle threshold is 300 seconds and default sampling interval is 2 seconds. Foreground or service runs can override them:
 
