@@ -12,23 +12,25 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 ## Query Workflow
 
 1. Run `cargo run -- paths --json` to discover storage paths.
-2. Use `cargo run -- report YYYY-MM-DD --json` for the one-call AI payload: summary, sessions, open checkpoint, and paths.
-3. Use `cargo run -- timeline YYYY-MM-DD --json` for compact ordered blocks grouped by app/domain/category.
-4. Use `cargo run -- audit YYYY-MM-DD --json` to inspect log quality gaps, overlaps, invalid rows, and open checkpoint state.
-5. Use `cargo run -- query --from YYYY-MM-DD --to YYYY-MM-DD --json` for cross-day search payloads with summary, compact timeline, sessions, filters, and open checkpoint.
-6. Use `cargo run -- query --since RFC3339 --until RFC3339 --json` for precise report windows, or `cargo run -- query --last-minutes N --json` for rolling auto-report windows.
-7. Omit window args on `query` for all-history search.
-8. Use `cargo run -- day YYYY-MM-DD --json` for daily summaries.
-9. Use `cargo run -- logs YYYY-MM-DD --json` for one-day raw sessions.
-10. Narrow `query` or `logs` with `--app`, `--title`, `--category`, `--domain`, `--activity-type active|idle|untracked`, and `--limit`.
-11. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
-12. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
-13. After category rule changes, run `cargo run -- reclassify --dry-run --json`, then rerun without `--dry-run`.
-14. After auditing gaps, run `cargo run -- repair-gaps --dry-run --json`, then rerun without `--dry-run` to insert explicit untracked sessions.
+2. Use `cargo run -- health --json` before reports to verify launchd state, storage freshness, open checkpoint, paths, and today's audit counts.
+3. Use `cargo run -- report YYYY-MM-DD --json` for the one-call AI payload: summary, sessions, open checkpoint, and paths.
+4. Use `cargo run -- timeline YYYY-MM-DD --json` for compact ordered blocks grouped by app/domain/category.
+5. Use `cargo run -- audit YYYY-MM-DD --json` to inspect log quality gaps, overlaps, invalid rows, and open checkpoint state.
+6. Use `cargo run -- query --from YYYY-MM-DD --to YYYY-MM-DD --json` for cross-day search payloads with summary, compact timeline, sessions, filters, and open checkpoint.
+7. Use `cargo run -- query --since RFC3339 --until RFC3339 --json` for precise report windows, or `cargo run -- query --last-minutes N --json` for rolling auto-report windows.
+8. Omit window args on `query` for all-history search.
+9. Use `cargo run -- day YYYY-MM-DD --json` for daily summaries.
+10. Use `cargo run -- logs YYYY-MM-DD --json` for one-day raw sessions.
+11. Narrow `query` or `logs` with `--app`, `--title`, `--category`, `--domain`, `--activity-type active|idle|untracked`, and `--limit`.
+12. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
+13. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
+14. After category rule changes, run `cargo run -- reclassify --dry-run --json`, then rerun without `--dry-run`.
+15. After auditing gaps, run `cargo run -- repair-gaps --dry-run --json`, then rerun without `--dry-run` to insert explicit untracked sessions.
 
 ## Operations
 
 - Health check: `cargo run -- doctor --json`
+- Service substrate health: `cargo run -- health --json`
 - Foreground tracking: `cargo run -- track`
 - Background install: `cargo run --release -- service install`
 - Background status: `cargo run -- service status --json`

@@ -14,6 +14,7 @@ In-progress local-first macOS activity tracker for building near-perfect persona
 - Maintains indexed epoch timestamps in SQLite for scalable day/range queries.
 - Mirrors completed sessions to JSONL for audit/export fallback.
 - Maintains an open-session checkpoint so a restart can recover the active span instead of losing it.
+- Reports collector health, freshness, service state, and today's data-quality audit via `health --json`.
 - Generates CSV exports for spreadsheet workflows.
 - Provides `--json` output for AI/tool callers.
 - Installs as a `launchd` user service for behind-the-scenes collection.
@@ -48,6 +49,7 @@ macOS will likely ask for Accessibility permission for the terminal or binary ho
 
 ```bash
 activity_tracker paths --json
+activity_tracker health --json
 activity_tracker doctor --json
 activity_tracker service status --json
 activity_tracker day 2026-06-03 --json
@@ -75,6 +77,7 @@ activity_tracker repair-gaps --dry-run --json
 `day`, `logs`, `query`, `summary`, and `report` include the active open session when it overlaps the query; exports stay based on completed sessions.
 `timeline --json` returns compact ordered blocks grouped by app/domain/category so agents can write reports without reading every raw session.
 `audit --json` reports log quality for a day: gaps above a configurable threshold, overlaps, invalid rows, and current open-session state.
+`health --json` is the cheap service substrate check for agents: launchd state, storage freshness, latest observed activity age, open checkpoint, paths, and today's audit counts.
 `service status --json` reports launchd load/running state and PID without requiring agents to parse `launchctl` text.
 `reclassify` recomputes categories from current app and browser-domain rules, useful after improving category mappings.
 `repair-gaps` converts audited gaps in completed logs into explicit `activity_type: "untracked"` sessions so missing time stays visible instead of disappearing from totals.

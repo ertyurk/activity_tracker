@@ -7,13 +7,13 @@ use std::thread;
 use std::time::Duration;
 
 use activity_tracker::{
-    ActivityProbe, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS, DEFAULT_IDLE_THRESHOLD_SECONDS,
-    DEFAULT_INTERVAL_SECONDS, DEFAULT_PROBE_MISS_TOLERANCE, DEFAULT_RECENT_CHECKPOINT_SECONDS,
-    LogStore, MacOsProbe, ProbeMissStabilizer, QueryTimeWindowInput, Result, TrackerError,
-    TrackerState, UsageSession, audit_sessions, day_bounds, filter_sessions, format_seconds,
-    install_launch_agent, legacy_data_dir, legacy_sessions_path, parse_date, query_time_window,
-    service_status, service_status_report, summarize_all, summarize_day, timeline_blocks,
-    uninstall_launch_agent,
+    ActivityProbe, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS, DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS,
+    DEFAULT_IDLE_THRESHOLD_SECONDS, DEFAULT_INTERVAL_SECONDS, DEFAULT_PROBE_MISS_TOLERANCE,
+    DEFAULT_RECENT_CHECKPOINT_SECONDS, LogStore, MacOsProbe, ProbeMissStabilizer,
+    QueryTimeWindowInput, Result, TrackerError, TrackerState, UsageSession, audit_sessions,
+    day_bounds, filter_sessions, format_seconds, install_launch_agent, legacy_data_dir,
+    legacy_sessions_path, parse_date, query_time_window, service_status, service_status_report,
+    summarize_all, summarize_day, timeline_blocks, uninstall_launch_agent,
 };
 use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -61,6 +61,8 @@ enum Command {
     RepairGaps(RepairGapsArgs),
     /// Print storage and service paths.
     Paths(OutputArgs),
+    /// Print collector health, freshness, service state, and today audit.
+    Health(HealthArgs),
     /// Check macOS permissions, probes, and writable storage.
     Doctor(OutputArgs),
     /// Install, uninstall, or inspect launchd background service.
@@ -148,6 +150,16 @@ struct LogsArgs {
 #[derive(Debug, Args)]
 struct AuditArgs {
     date: Option<String>,
+    #[arg(long, default_value_t = DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS)]
+    gap_threshold_seconds: f64,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct HealthArgs {
+    #[arg(long, default_value_t = DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS)]
+    stale_threshold_seconds: u64,
     #[arg(long, default_value_t = DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS)]
     gap_threshold_seconds: f64,
     #[arg(long)]
@@ -259,6 +271,7 @@ fn run() -> Result<()> {
         Command::Reclassify(args) => reclassify(&store, args),
         Command::RepairGaps(args) => repair_gaps(&store, args),
         Command::Paths(args) => print_paths(&store, args),
+        Command::Health(args) => print_health(&store, args),
         Command::Doctor(args) => doctor(&store, args),
         Command::Service(command) => run_service(&store, command),
     }
@@ -654,6 +667,55 @@ fn print_paths(store: &LogStore, args: OutputArgs) -> Result<()> {
         if let Some(path) = legacy_sessions_path() {
             println!("legacy_sessions_jsonl: {}", path.display());
         }
+        Ok(())
+    }
+}
+
+fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
+    let now = Local::now();
+    let date = now.date_naive();
+    let storage = store.storage_health(now, args.stale_threshold_seconds)?;
+    let sessions =
+        store.sessions_for_day_with_open(date, now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
+    let audit = audit_sessions(&sessions, args.gap_threshold_seconds);
+    let service = service_status_report();
+    let healthy = storage.fresh && service.running;
+
+    if args.json {
+        let value = serde_json::json!({
+            "generated_at": now,
+            "date": date,
+            "healthy": healthy,
+            "fresh": storage.fresh,
+            "service": service,
+            "storage": storage,
+            "today_audit": audit,
+            "gap_threshold_seconds": args.gap_threshold_seconds.max(0.0),
+            "paths": {
+                "root": store.root(),
+                "sqlite": store.db_path(),
+                "sessions_jsonl": store.sessions_path(),
+                "csv": store.csv_path(),
+                "exports": store.exports_dir(),
+                "logs": store.logs_dir(),
+            },
+        });
+        print_json(&value)
+    } else {
+        println!("healthy: {}", yes_no(healthy));
+        println!("fresh: {}", yes_no(storage.fresh));
+        println!("service_running: {}", yes_no(service.running));
+        if let Some(pid) = service.pid {
+            println!("service_pid: {pid}");
+        }
+        println!("session_count: {}", storage.session_count);
+        if let Some(seconds) = storage.latest_observed_age_seconds {
+            println!("latest_observed_age: {}", format_seconds(seconds));
+        }
+        println!("today_sessions: {}", audit.session_count);
+        println!("today_gaps: {}", audit.gap_count);
+        println!("today_overlaps: {}", audit.overlap_count);
+        println!("today_invalid_sessions: {}", audit.invalid_session_count);
         Ok(())
     }
 }

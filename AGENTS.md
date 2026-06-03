@@ -35,6 +35,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 cargo fmt
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
+cargo run -- health --json
 cargo run -- doctor
 cargo run -- paths --json
 cargo run -- service status --json

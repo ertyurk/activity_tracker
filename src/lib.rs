@@ -19,6 +19,7 @@ pub const DEFAULT_IDLE_THRESHOLD_SECONDS: u64 = 300;
 pub const DEFAULT_PROBE_MISS_TOLERANCE: u8 = 3;
 pub const DEFAULT_RECENT_CHECKPOINT_SECONDS: u64 = 30;
 pub const DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS: f64 = 30.0;
+pub const DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS: u64 = 60;
 pub const SERVICE_LABEL: &str = "com.local.activity-tracker";
 pub const IDLE_BUNDLE_ID: &str = "local.activity_tracker.idle";
 pub const UNTRACKED_BUNDLE_ID: &str = "local.activity_tracker.untracked";
@@ -288,6 +289,17 @@ pub struct ServiceStatusReport {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct StorageHealth {
+    pub session_count: u64,
+    pub last_completed_session: Option<UsageSession>,
+    pub open_session: Option<SessionCheckpoint>,
+    pub latest_observed_at: Option<DateTime<Local>>,
+    pub latest_observed_age_seconds: Option<f64>,
+    pub stale_threshold_seconds: u64,
+    pub fresh: bool,
+}
+
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct ImportReport {
     pub scanned: usize,
@@ -536,6 +548,53 @@ impl LogStore {
         Ok(Vec::new())
     }
 
+    pub fn session_count(&self) -> Result<u64> {
+        if self.db_path().exists() {
+            self.ensure_database_ready()?;
+            return self.db_session_count();
+        }
+
+        Ok(self.load_sessions()?.len() as u64)
+    }
+
+    pub fn last_completed_session(&self) -> Result<Option<UsageSession>> {
+        if self.db_path().exists() {
+            self.ensure_database_ready()?;
+            return self.load_last_session_from_db();
+        }
+
+        let mut sessions = self.load_sessions()?;
+        sessions.sort_by_key(|session| (session.end_time, session.start_time));
+        Ok(sessions.pop())
+    }
+
+    pub fn storage_health(
+        &self,
+        now: DateTime<Local>,
+        stale_threshold_seconds: u64,
+    ) -> Result<StorageHealth> {
+        self.ensure_dirs()?;
+        let session_count = self.session_count()?;
+        let last_completed_session = self.last_completed_session()?;
+        let open_session = self.open_session_checkpoint()?;
+        let latest_observed_at =
+            latest_observed_at(last_completed_session.as_ref(), open_session.as_ref());
+        let latest_observed_age_seconds =
+            latest_observed_at.map(|observed_at| age_seconds(observed_at, now));
+        let fresh = latest_observed_age_seconds
+            .is_some_and(|seconds| seconds <= stale_threshold_seconds as f64);
+
+        Ok(StorageHealth {
+            session_count,
+            last_completed_session,
+            open_session,
+            latest_observed_at,
+            latest_observed_age_seconds,
+            stale_threshold_seconds,
+            fresh,
+        })
+    }
+
     pub fn sessions_in_window(
         &self,
         window_start: Option<DateTime<Local>>,
@@ -564,6 +623,17 @@ impl LogStore {
 
     fn load_sessions_from_db(&self) -> Result<Vec<UsageSession>> {
         self.load_sessions_from_db_window(None, None)
+    }
+
+    fn load_last_session_from_db(&self) -> Result<Option<UsageSession>> {
+        let sessions = self.query_sessions_from_db(
+            "SELECT start_time, end_time, duration_seconds, app_name, bundle_id, title, category, url, activity_type
+             FROM sessions
+             ORDER BY end_unix_ms DESC, start_unix_ms DESC, id DESC
+             LIMIT 1",
+            [],
+        )?;
+        Ok(sessions.into_iter().next())
     }
 
     fn load_sessions_from_db_window(
@@ -1963,6 +2033,24 @@ fn seconds_between(start_time: DateTime<Local>, end_time: DateTime<Local>) -> Op
     Some(millis as f64 / 1_000.0)
 }
 
+fn age_seconds(observed_at: DateTime<Local>, now: DateTime<Local>) -> f64 {
+    seconds_between(observed_at, now).unwrap_or(0.0)
+}
+
+fn latest_observed_at(
+    last_completed_session: Option<&UsageSession>,
+    open_session: Option<&SessionCheckpoint>,
+) -> Option<DateTime<Local>> {
+    match (last_completed_session, open_session) {
+        (Some(session), Some(checkpoint)) => {
+            Some(max_datetime(session.end_time, checkpoint.last_seen_at))
+        }
+        (Some(session), None) => Some(session.end_time),
+        (None, Some(checkpoint)) => Some(checkpoint.last_seen_at),
+        (None, None) => None,
+    }
+}
+
 fn idle_start(
     observed_at: DateTime<Local>,
     idle_seconds: Option<f64>,
@@ -2601,6 +2689,45 @@ mod tests {
                 .map(|session| session.start_time.timestamp_millis()),
             Some(parse_local_datetime("2026-06-03T08:00:00+02:00")?.timestamp_millis())
         );
+        Ok(())
+    }
+
+    #[test]
+    fn storage_health_reports_freshness_from_checkpoint() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let session_start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing session start"))?;
+        let session_end = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing session end"))?;
+        let checkpoint_start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 2, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing checkpoint start"))?;
+        let checkpoint_seen = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 2, 30)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing checkpoint seen"))?;
+        let now = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 2, 45)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing now"))?;
+        let session = UsageSession::from_entity(&entity(), session_start, session_end)
+            .ok_or_else(|| anyhow::anyhow!("missing session"))?;
+
+        store.append_session(&session)?;
+        store.checkpoint_session(&entity(), checkpoint_start, checkpoint_seen)?;
+        let health = store.storage_health(now, 60)?;
+
+        assert!(health.fresh);
+        assert_eq!(health.session_count, 1);
+        assert_eq!(health.latest_observed_at, Some(checkpoint_seen));
+        assert_eq!(health.latest_observed_age_seconds, Some(15.0));
+        assert!(health.open_session.is_some());
         Ok(())
     }
 
