@@ -480,6 +480,7 @@ pub struct RepairContextReport {
     pub missing_url_repaired: usize,
     pub neighbor_repaired: usize,
     pub unique_observation_repaired: usize,
+    pub untracked_repaired: usize,
     pub dry_run: bool,
 }
 
@@ -1378,33 +1379,44 @@ impl LogStore {
             }
             let previous = index.checked_sub(1).and_then(|index| sessions.get(index));
             let next = sessions.get(index + 1);
-            let Some(repair) =
+            if let Some(repair) =
                 repaired_browser_context_for_session(session, previous, next, &url_titles)
-            else {
+            {
+                report.repaired += 1;
+                if repair.title.as_ref() != session.title.as_ref() {
+                    report.title_repaired += 1;
+                    if missing_title {
+                        report.missing_title_repaired += 1;
+                    }
+                }
+                if repair.url.as_ref() != session.url.as_ref() {
+                    report.url_repaired += 1;
+                    if missing_url {
+                        report.missing_url_repaired += 1;
+                    }
+                }
+                match repair.source {
+                    BrowserContextRepairSource::Neighbor => report.neighbor_repaired += 1,
+                    BrowserContextRepairSource::UniqueObservation => {
+                        report.unique_observation_repaired += 1;
+                    }
+                }
+                if !dry_run {
+                    self.update_session_context(
+                        session,
+                        repair.title.as_ref(),
+                        repair.url.as_ref(),
+                    )?;
+                }
                 continue;
-            };
+            }
 
-            report.repaired += 1;
-            if repair.title.as_ref() != session.title.as_ref() {
-                report.title_repaired += 1;
-                if missing_title {
-                    report.missing_title_repaired += 1;
+            if browser_session_context_unavailable(session) {
+                report.repaired += 1;
+                report.untracked_repaired += 1;
+                if !dry_run {
+                    self.update_session_as_untracked(session)?;
                 }
-            }
-            if repair.url.as_ref() != session.url.as_ref() {
-                report.url_repaired += 1;
-                if missing_url {
-                    report.missing_url_repaired += 1;
-                }
-            }
-            match repair.source {
-                BrowserContextRepairSource::Neighbor => report.neighbor_repaired += 1,
-                BrowserContextRepairSource::UniqueObservation => {
-                    report.unique_observation_repaired += 1;
-                }
-            }
-            if !dry_run {
-                self.update_session_context(session, repair.title.as_ref(), repair.url.as_ref())?;
             }
         }
 
@@ -1796,6 +1808,45 @@ impl LogStore {
                 title,
                 url,
                 category,
+                session.start_time.to_rfc3339(),
+                session.end_time.to_rfc3339(),
+                &session.app_name,
+                &session.bundle_id,
+                &session.title,
+                &session.url,
+                session.activity_type.to_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn update_session_as_untracked(&self, session: &UsageSession) -> Result<()> {
+        let Some(untracked) = untracked_session(session.start_time, session.end_time) else {
+            return Ok(());
+        };
+        let conn = self.open_db_connection()?;
+        conn.execute(
+            "UPDATE sessions
+             SET app_name = ?1,
+                 bundle_id = ?2,
+                 title = ?3,
+                 category = ?4,
+                 url = ?5,
+                 activity_type = ?6
+             WHERE start_time = ?7
+               AND end_time = ?8
+               AND app_name = ?9
+               AND bundle_id = ?10
+               AND title IS ?11
+               AND url IS ?12
+               AND activity_type = ?13",
+            params![
+                &untracked.app_name,
+                &untracked.bundle_id,
+                &untracked.title,
+                &untracked.category,
+                &untracked.url,
+                untracked.activity_type.to_string(),
                 session.start_time.to_rfc3339(),
                 session.end_time.to_rfc3339(),
                 &session.app_name,
@@ -3498,6 +3549,22 @@ fn browser_context_missing_title(session: &UsageSession) -> bool {
             .title
             .as_deref()
             .is_none_or(|title| title.trim().is_empty())
+}
+
+fn browser_session_context_unavailable(session: &UsageSession) -> bool {
+    session.activity_type == ActivityType::Active
+        && is_browser(&session.bundle_id)
+        && !browser_blank_tab(session)
+        && session
+            .title
+            .as_deref()
+            .and_then(non_empty_borrowed)
+            .is_none()
+        && session
+            .url
+            .as_deref()
+            .and_then(non_empty_borrowed)
+            .is_none()
 }
 
 fn browser_blank_tab(session: &UsageSession) -> bool {
@@ -5394,17 +5461,19 @@ mod tests {
         assert_eq!(dry_run.mismatches_found, 0);
         assert_eq!(dry_run.missing_titles_found, 4);
         assert_eq!(dry_run.missing_urls_found, 3);
-        assert_eq!(dry_run.repaired, 3);
+        assert_eq!(dry_run.repaired, 4);
         assert_eq!(dry_run.title_repaired, 2);
         assert_eq!(dry_run.url_repaired, 2);
         assert_eq!(dry_run.missing_title_repaired, 2);
         assert_eq!(dry_run.missing_url_repaired, 2);
         assert_eq!(dry_run.neighbor_repaired, 3);
         assert_eq!(dry_run.unique_observation_repaired, 0);
-        assert_eq!(report.repaired, 3);
+        assert_eq!(dry_run.untracked_repaired, 1);
+        assert_eq!(report.repaired, 4);
         assert_eq!(second_report.repaired, 0);
-        assert_eq!(audit.missing_title_count, 2);
-        assert_eq!(audit.browser_missing_url_count, 1);
+        assert_eq!(audit.missing_title_count, 1);
+        assert_eq!(audit.browser_missing_url_count, 0);
+        assert_eq!(audit.untracked_session_count, 1);
         assert_eq!(repaired_title.title.as_deref(), Some(slack_title));
         assert_eq!(repaired_title.url.as_deref(), Some(slack_url));
         assert_eq!(repaired_title.category, "Communication");
@@ -5416,8 +5485,10 @@ mod tests {
         assert_eq!(repaired_both.category, "Email");
         assert_eq!(unresolved_title.title, None);
         assert_eq!(unresolved_title.url.as_deref(), Some(repo_url));
-        assert_eq!(unresolved_context.title, None);
-        assert_eq!(unresolved_context.url, None);
+        assert_eq!(unresolved_context.activity_type, ActivityType::Untracked);
+        assert_eq!(unresolved_context.app_name, "Untracked");
+        assert_eq!(unresolved_context.bundle_id, UNTRACKED_BUNDLE_ID);
+        assert_eq!(unresolved_context.category, "Untracked");
         Ok(())
     }
 

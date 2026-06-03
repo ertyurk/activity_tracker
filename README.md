@@ -117,7 +117,7 @@ Windowed summaries and timelines are clipped to the requested day/range/last-min
 `repair-gaps` converts audited gaps in completed logs into explicit `activity_type: "untracked"` sessions so missing time stays visible instead of disappearing from totals.
 `repair-titles` backfills native-app title gaps with the app name when macOS exposes only app-level context, and repairs browser titles only when the exact URL has one unique observed title elsewhere in the log.
 `repair-urls` canonicalizes safe URL-only fixes such as known browser blank-tab URLs and missing URLs surrounded by blank-tab samples to `about:newtab`.
-`repair-context` repairs high-confidence browser title/URL mismatches and missing browser context from immediate neighbor evidence or a unique clean exact-URL title observation, then recomputes category.
+`repair-context` repairs high-confidence browser title/URL mismatches and missing browser context from immediate neighbor evidence or a unique clean exact-URL title observation, converts unrecoverable all-missing browser context rows to untracked time, then recomputes category.
 `repair-mirror` rewrites the JSONL mirror and CSV view from SQLite, using SQLite as the source of truth when mirror verification fails.
 
 No subcommand defaults to `track`, preserving the original simple run behavior.

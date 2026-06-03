@@ -73,7 +73,7 @@ enum Command {
     RepairTitles(RepairTitlesArgs),
     /// Canonicalize safe URL repairs, such as known browser blank tabs.
     RepairUrls(RepairUrlsArgs),
-    /// Repair high-confidence browser title/URL mismatches.
+    /// Repair browser context gaps and high-confidence mismatches.
     RepairContext(RepairContextArgs),
     /// Rewrite JSONL mirror and CSV view from SQLite source of truth.
     RepairMirror(OutputArgs),
@@ -1002,6 +1002,7 @@ fn repair_context(store: &LogStore, args: RepairContextArgs) -> Result<()> {
             "unique_observation_repaired: {}",
             report.unique_observation_repaired
         );
+        println!("untracked_repaired: {}", report.untracked_repaired);
         println!("dry_run: {}", yes_no(report.dry_run));
         Ok(())
     }

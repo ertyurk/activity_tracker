@@ -38,7 +38,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - Tolerate brief active-app probe misses; do not turn transient macOS/AppleScript failures into fake gaps.
 - Tracker startup should tolerate initial active-app or idle probe failures and begin with no active entity instead of exiting.
 - Audit should expose suspicious browser title/URL mismatches so old mixed-context rows are visible to agents.
-- Use `repair-context` only for high-confidence browser title/URL mismatch or missing-context repairs with neighbor or exact-URL evidence.
+- Use `repair-context` only for high-confidence browser title/URL mismatch or missing-context repairs with neighbor/exact-URL evidence, or to convert all-missing browser context rows to untracked time.
 - Day queries must handle cross-midnight sessions by overlap, not only start date.
 - Background mode should use `launchd` via `activity_tracker service install`.
 - `service install` should persist configured `--interval-seconds` and `--idle-threshold-seconds` into LaunchAgent arguments.
