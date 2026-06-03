@@ -34,7 +34,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 21. After auditing gaps, run `cargo run -- repair-gaps --dry-run --json`, then rerun without `--dry-run` to insert explicit untracked sessions.
 22. After improving title capture, run `cargo run -- repair-titles --dry-run --json`, then rerun without `--dry-run` to backfill native app titles and browser titles whose exact URL has one unique observed title.
 23. After improving URL normalization, run `cargo run -- repair-urls --dry-run --json`, then rerun without `--dry-run` to canonicalize safe URL-only fixes such as known or surrounded browser blank tabs.
-24. After exposing browser context mismatches or missing browser context, run `cargo run -- repair-context --dry-run --json`, then rerun without `--dry-run` only for high-confidence neighbor/exact-URL repairs or all-missing browser rows that should become untracked.
+24. After exposing browser context mismatches or missing browser context, run `cargo run -- repair-context --dry-run --json`, then rerun without `--dry-run` only for high-confidence neighbor/exact-URL repairs, all-missing browser rows, or short unrecoverable mixed-context rows that should become untracked.
 25. Prefer scoped repair commands returned by `agent.repair_plan.actionable_commands`; `agent.quality.repair_commands` are candidates and may explain quality warnings that are not safely repairable.
 
 ## Operations
@@ -85,7 +85,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Stabilize brief same-browser title/URL misses from current tab context only when observed context is missing or matches; never fill across conflicting titles or URLs.
 - Treat longer browser samples with no tab title and no URL as untracked time after the short tolerance instead of storing active browser rows with empty context.
 - Keep suspicious browser title/URL mismatches visible in audit output so agents do not over-trust old mixed-context rows.
-- Use `repair-context` to fix only high-confidence browser context mismatches and missing browser title/URL fields, or to convert all-missing browser context rows to untracked time; do not infer from weak title/domain guesses alone.
+- Use `repair-context` to fix only high-confidence browser context mismatches and missing browser title/URL fields, or to convert all-missing and short unrecoverable mixed-context browser rows to untracked time; do not infer from weak title/domain guesses alone.
 - Keep `reclassify`, `repair-gaps`, `repair-titles`, `repair-urls`, and `repair-context` scoped to the audited window when an agent is fixing a specific report window.
 - For native apps, collect app identity and title fallback from the same foreground probe sample: window title first, then app title/name when macOS exposes no window.
 - Use `repair-titles` to backfill native app title gaps and exact-URL browser title gaps after title capture changes; do not mask browser misses with synthetic titles.

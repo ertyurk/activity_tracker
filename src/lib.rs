@@ -23,6 +23,7 @@ pub const DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS: f64 = 30.0;
 pub const DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS: u64 = 60;
 pub const SQLITE_BUSY_TIMEOUT_SECONDS: u64 = 5;
 pub const MAX_AUDIT_QUALITY_ISSUES: usize = 50;
+pub const UNREPAIRABLE_BROWSER_MISMATCH_UNTRACKED_SECONDS: f64 = 10.0;
 pub const SERVICE_LABEL: &str = "com.local.activity-tracker";
 pub const IDLE_BUNDLE_ID: &str = "local.activity_tracker.idle";
 pub const UNTRACKED_BUNDLE_ID: &str = "local.activity_tracker.untracked";
@@ -1411,7 +1412,9 @@ impl LogStore {
                 continue;
             }
 
-            if browser_session_context_unavailable(session) {
+            if browser_session_context_unavailable(session)
+                || short_unrepairable_browser_context_mismatch(session)
+            {
                 report.repaired += 1;
                 report.untracked_repaired += 1;
                 if !dry_run {
@@ -3567,6 +3570,11 @@ fn browser_session_context_unavailable(session: &UsageSession) -> bool {
             .is_none()
 }
 
+fn short_unrepairable_browser_context_mismatch(session: &UsageSession) -> bool {
+    browser_context_mismatch(session)
+        && session.duration_seconds <= UNREPAIRABLE_BROWSER_MISMATCH_UNTRACKED_SECONDS
+}
+
 fn browser_blank_tab(session: &UsageSession) -> bool {
     is_browser(&session.bundle_id)
         && (session
@@ -5391,6 +5399,57 @@ mod tests {
                 && session.url.as_deref() == Some("https://app.slack.com/client/TF7GEHYHZ/dms")
                 && session.category == "Communication"
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn repair_context_converts_short_unrepairable_mismatches_to_untracked() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 9, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let short_start = start + seconds_delta(10)?;
+        let long_start = start + seconds_delta(30)?;
+        let mut short_entity = entity();
+        short_entity.title = Some("Settings - Claude".to_string());
+        short_entity.url = Some("https://app.slack.com/client/TF7GEHYHZ/dms".to_string());
+        short_entity.category = "Communication".to_string();
+        let mut long_entity = short_entity.clone();
+        long_entity.title = Some("Claude Console".to_string());
+        let short_mismatch =
+            UsageSession::from_entity(&short_entity, short_start, short_start + seconds_delta(2)?)
+                .ok_or_else(|| anyhow::anyhow!("missing short mismatch"))?;
+        let long_mismatch =
+            UsageSession::from_entity(&long_entity, long_start, long_start + seconds_delta(30)?)
+                .ok_or_else(|| anyhow::anyhow!("missing long mismatch"))?;
+
+        store.append_session(&short_mismatch)?;
+        store.append_session(&long_mismatch)?;
+        let dry_run = store.repair_context(true)?;
+        let report = store.repair_context(false)?;
+        let sessions = store.load_sessions()?;
+        let audit = audit_sessions(&sessions, 30.0);
+        let repaired_short = sessions
+            .iter()
+            .find(|session| session.start_time == short_start)
+            .ok_or_else(|| anyhow::anyhow!("missing repaired short mismatch"))?;
+        let unresolved_long = sessions
+            .iter()
+            .find(|session| session.start_time == long_start)
+            .ok_or_else(|| anyhow::anyhow!("missing unresolved long mismatch"))?;
+
+        assert_eq!(dry_run.mismatches_found, 2);
+        assert_eq!(dry_run.repaired, 1);
+        assert_eq!(dry_run.untracked_repaired, 1);
+        assert_eq!(report.repaired, 1);
+        assert_eq!(audit.browser_context_mismatch_count, 1);
+        assert_eq!(audit.untracked_session_count, 1);
+        assert_eq!(repaired_short.activity_type, ActivityType::Untracked);
+        assert_eq!(repaired_short.app_name, "Untracked");
+        assert_eq!(unresolved_long.activity_type, ActivityType::Active);
+        assert_eq!(unresolved_long.title.as_deref(), Some("Claude Console"));
         Ok(())
     }
 
