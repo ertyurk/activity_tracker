@@ -1864,6 +1864,56 @@ pub fn audit_sessions(sessions: &[UsageSession], gap_threshold_seconds: f64) -> 
 }
 
 #[must_use]
+pub fn audit_sessions_in_window(
+    sessions: &[UsageSession],
+    gap_threshold_seconds: f64,
+    window_start: Option<DateTime<Local>>,
+    window_end: Option<DateTime<Local>>,
+) -> ActivityAudit {
+    let mut clipped = clip_sessions_to_window(sessions, window_start, window_end);
+    clipped.sort_by_key(|session| (session.start_time, session.end_time));
+    let mut audit = audit_sessions(&clipped, gap_threshold_seconds);
+    let gap_threshold_seconds = gap_threshold_seconds.max(0.0);
+
+    if clipped.is_empty() {
+        if let (Some(start_time), Some(end_time)) = (window_start, window_end) {
+            add_boundary_gap(
+                &mut audit,
+                start_time,
+                end_time,
+                "window_start",
+                "window_end",
+                gap_threshold_seconds,
+            );
+        }
+        return audit;
+    }
+
+    if let (Some(start_time), Some(first)) = (window_start, clipped.first()) {
+        add_boundary_gap(
+            &mut audit,
+            start_time,
+            first.start_time,
+            "window_start",
+            &first.app_name,
+            gap_threshold_seconds,
+        );
+    }
+    if let (Some(end_time), Some(last)) = (window_end, clipped.last()) {
+        add_boundary_gap(
+            &mut audit,
+            last.end_time,
+            end_time,
+            &last.app_name,
+            "window_end",
+            gap_threshold_seconds,
+        );
+    }
+
+    audit
+}
+
+#[must_use]
 pub fn timeline_blocks(sessions: &[UsageSession]) -> Vec<TimelineBlock> {
     let mut sorted = sessions.to_vec();
     sorted.sort_by_key(|session| (session.start_time, session.end_time));
@@ -3043,6 +3093,30 @@ fn session_window_bounds(
         min_datetime(session.end_time, window_end)
     });
     (start, end)
+}
+
+fn add_boundary_gap(
+    audit: &mut ActivityAudit,
+    start_time: DateTime<Local>,
+    end_time: DateTime<Local>,
+    previous_app: &str,
+    next_app: &str,
+    gap_threshold_seconds: f64,
+) {
+    if let Some(duration_seconds) = seconds_between(start_time, end_time)
+        && duration_seconds >= gap_threshold_seconds
+    {
+        audit.total_gap_seconds += duration_seconds;
+        audit.longest_gap_seconds = audit.longest_gap_seconds.max(duration_seconds);
+        audit.gaps.push(AuditGap {
+            start_time,
+            end_time,
+            duration_seconds,
+            previous_app: previous_app.to_string(),
+            next_app: next_app.to_string(),
+        });
+        audit.gap_count = audit.gaps.len();
+    }
 }
 
 fn quality_rows<I>(names: I) -> Vec<AuditQualityRow>
@@ -5308,6 +5382,78 @@ mod tests {
         assert_eq!(audit.total_gap_seconds, 120.0);
         assert_eq!(audit.longest_gap_seconds, 120.0);
         assert_eq!(audit.overlap_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn audit_sessions_in_window_reports_boundary_gaps() -> AnyhowResult<()> {
+        let window_start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing window start"))?;
+        let window_end = Local
+            .with_ymd_and_hms(2026, 6, 3, 9, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing window end"))?;
+        let session = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 10, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing session start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 20, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing session end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing session"))?;
+
+        let audit =
+            audit_sessions_in_window(&[session], 30.0, Some(window_start), Some(window_end));
+
+        assert_eq!(audit.gap_count, 2);
+        assert_eq!(audit.total_gap_seconds, 3000.0);
+        assert_eq!(audit.longest_gap_seconds, 2400.0);
+        assert_eq!(
+            audit
+                .gaps
+                .first()
+                .map(|gap| (gap.previous_app.as_str(), gap.next_app.as_str())),
+            Some(("window_start", "Google Chrome"))
+        );
+        assert_eq!(
+            audit
+                .gaps
+                .last()
+                .map(|gap| (gap.previous_app.as_str(), gap.next_app.as_str())),
+            Some(("Google Chrome", "window_end"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn audit_sessions_in_window_reports_empty_window_gap() -> AnyhowResult<()> {
+        let window_start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing window start"))?;
+        let window_end = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 5, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing window end"))?;
+
+        let audit = audit_sessions_in_window(&[], 30.0, Some(window_start), Some(window_end));
+
+        assert_eq!(audit.session_count, 0);
+        assert_eq!(audit.gap_count, 1);
+        assert_eq!(audit.total_gap_seconds, 300.0);
+        assert_eq!(
+            audit
+                .gaps
+                .first()
+                .map(|gap| (gap.previous_app.as_str(), gap.next_app.as_str())),
+            Some(("window_start", "window_end"))
+        );
         Ok(())
     }
 

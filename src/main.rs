@@ -12,10 +12,10 @@ use activity_tracker::{
     DEFAULT_INTERVAL_SECONDS, DEFAULT_PROBE_MISS_TOLERANCE, DEFAULT_RECENT_CHECKPOINT_SECONDS,
     LogStore, MacOsProbe, ProbeMissStabilizer, QueryTimeWindow, QueryTimeWindowInput, Result,
     SessionFilterInput, TrackerError, TrackerState, UsageSession, audit_sessions,
-    clip_sessions_to_window, day_bounds, filter_sessions, format_seconds, install_launch_agent,
-    inventory_for_sessions, legacy_data_dir, legacy_sessions_path, parse_date, query_time_window,
-    service_status, service_status_report, summarize_all, summarize_day, summarize_window,
-    timeline_blocks, uninstall_launch_agent,
+    audit_sessions_in_window, clip_sessions_to_window, day_bounds, filter_sessions, format_seconds,
+    install_launch_agent, inventory_for_sessions, legacy_data_dir, legacy_sessions_path,
+    parse_date, query_time_window, service_status, service_status_report, summarize_all,
+    summarize_day, summarize_window, timeline_blocks, uninstall_launch_agent,
 };
 use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -1082,7 +1082,16 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
         )
     };
 
-    let window_audit = audit_sessions(&sessions, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS);
+    let window_audit = if window_last_minutes.is_some() {
+        audit_sessions_in_window(
+            &sessions,
+            DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS,
+            window_start,
+            window_end,
+        )
+    } else {
+        audit_sessions(&sessions, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS)
+    };
     let ready = agent_ready(&service, &storage, &window_audit);
     let warnings = agent_warnings(&service, &storage, &window_audit);
     let quality = agent_quality(&window_audit, repair_window);

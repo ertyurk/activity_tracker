@@ -63,6 +63,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Maintain the SQLite `open_session` heartbeat so crash/restart recovery does not lose the active span.
 - Include the provisional open session in live query commands (`day`, `logs`, `query`, `summary`, `report`) when it overlaps the query.
 - Keep windowed summaries and timelines clipped to requested day/range/last-minutes bounds; raw session arrays can retain original persisted start/end for audit/debug context.
+- Treat uncovered leading/trailing spans inside rolling `agent --last-minutes` windows as coverage gaps so auto reports know when their requested interval is only partially observed.
 - Keep `inventory --json` window-aware and backed by the same indexed query window; use it for filter menus instead of scanning raw history in callers.
 - Use app identity plus browser URL domains for categories; reclassify stored sessions when mappings change.
 - Keep observed domain mappings current for recurring work tools, communication, AI, writing, research, and development sites.
