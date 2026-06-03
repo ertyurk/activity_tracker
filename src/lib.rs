@@ -1762,7 +1762,12 @@ impl ActivityProbe for MacOsProbe {
             let url = normalize_browser_tab_url(title.as_deref(), browser_tab_url(&bundle_id));
             (title, url)
         } else {
-            (active_window_title(), None)
+            (
+                active_window_title()
+                    .or_else(active_app_title)
+                    .or_else(|| non_empty_string(name.clone())),
+                None,
+            )
         };
         let category = category_for_activity(&bundle_id, &name, url.as_deref());
         Ok(Some(ActiveEntity {
@@ -1930,6 +1935,33 @@ end tell"#;
         Ok(title) => non_empty_string(title),
         Err(error) => {
             tracing::debug!(error = %error, "window title probe failed");
+            None
+        }
+    }
+}
+
+pub fn active_app_title() -> Option<String> {
+    let script = r#"tell application "System Events"
+set frontApp to first application process whose frontmost is true
+try
+  set processTitle to title of frontApp
+  if processTitle is not missing value and processTitle is not "" then return processTitle
+end try
+try
+  set displayName to displayed name of frontApp
+  if displayName is not missing value and displayName is not "" then return displayName
+end try
+try
+  set appName to name of frontApp
+  if appName is not missing value and appName is not "" then return appName
+end try
+return ""
+end tell"#;
+
+    match run_osascript(script) {
+        Ok(title) => non_empty_string(title),
+        Err(error) => {
+            tracing::debug!(error = %error, "app title probe failed");
             None
         }
     }

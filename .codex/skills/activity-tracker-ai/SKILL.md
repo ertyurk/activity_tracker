@@ -49,6 +49,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Maintain the SQLite `open_session` heartbeat so crash/restart recovery does not lose the active span.
 - Include the provisional open session in live query commands (`day`, `logs`, `query`, `summary`, `report`) when it overlaps the query.
 - Use app identity plus browser URL domains for categories; reclassify stored sessions when mappings change.
+- For native apps, use foreground window title first and foreground app title/name as fallback when macOS exposes no window.
 - Preserve current session through short active-app probe misses; only create gaps after repeated misses.
 - Canonicalize known browser blank tabs as `about:newtab` and keep them separate from actionable missing-URL audit rows.
 - Record idle as `activity_type: "idle"` with `bundle_id: "local.activity_tracker.idle"` once HID idle time crosses threshold.
