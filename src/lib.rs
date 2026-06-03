@@ -43,6 +43,8 @@ pub enum TrackerError {
     InvalidDate(String),
     #[error("invalid timestamp `{0}`; expected RFC3339")]
     InvalidTimestamp(String),
+    #[error("invalid date range `{from}`..`{to}`; --to must be same day or after --from")]
+    InvalidDateRange { from: String, to: String },
     #[error("CSV is missing required column `{0}`")]
     MissingCsvColumn(&'static str),
     #[error("invalid activity type `{0}`")]
@@ -373,20 +375,25 @@ impl TrackerState {
         }
 
         let previous = self.current_entity.as_ref();
-        let switching_to_idle = desired_entity
+        let desired_is_idle = desired_entity
             .as_ref()
             .is_some_and(|entity| entity.activity_type == ActivityType::Idle)
-            && previous.is_some_and(|entity| entity.activity_type != ActivityType::Idle);
-        let end_time = if switching_to_idle {
+            && previous.is_none_or(|entity| entity.activity_type != ActivityType::Idle);
+        let end_time = if desired_is_idle {
             max_datetime(self.session_start, idle_started_at.unwrap_or(observed_at))
         } else {
             observed_at
         };
 
-        let completed = previous
-            .and_then(|entity| UsageSession::from_entity(entity, self.session_start, end_time));
+        let completed = if let Some(entity) = previous {
+            UsageSession::from_entity(entity, self.session_start, end_time)
+        } else if desired_entity.is_some() {
+            untracked_session(self.session_start, end_time)
+        } else {
+            None
+        };
         self.current_entity = desired_entity;
-        self.session_start = if completed.is_some() {
+        self.session_start = if completed.is_some() || desired_is_idle {
             end_time
         } else {
             observed_at
@@ -1146,6 +1153,23 @@ pub fn filter_sessions(
     if let Some(limit) = limit {
         filtered.truncate(limit);
     }
+    filtered
+}
+
+#[must_use]
+pub fn filter_sessions_by_time_window(
+    sessions: Vec<UsageSession>,
+    window_start: Option<DateTime<Local>>,
+    window_end: Option<DateTime<Local>>,
+) -> Vec<UsageSession> {
+    let mut filtered: Vec<_> = sessions
+        .into_iter()
+        .filter(|session| {
+            window_start.is_none_or(|start| session.end_time > start)
+                && window_end.is_none_or(|end| session.start_time < end)
+        })
+        .collect();
+    filtered.sort_by_key(|session| (session.start_time, session.end_time));
     filtered
 }
 
@@ -2743,6 +2767,83 @@ mod tests {
     }
 
     #[test]
+    fn filters_sessions_by_time_window_overlap() -> AnyhowResult<()> {
+        let window_start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing window start"))?;
+        let window_end = Local
+            .with_ymd_and_hms(2026, 6, 3, 9, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing window end"))?;
+        let mut before = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 7, 0, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing before start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 7, 30, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing before end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing before"))?;
+        let mut overlapping = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 7, 30, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing overlapping start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 10, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing overlapping end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing overlapping"))?;
+        let mut inside = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 15, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing inside start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 30, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing inside end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing inside"))?;
+        let mut after = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 9, 0, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing after start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 9, 30, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing after end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing after"))?;
+        before.title = Some("before".to_string());
+        overlapping.title = Some("overlapping".to_string());
+        inside.title = Some("inside".to_string());
+        after.title = Some("after".to_string());
+
+        let filtered = filter_sessions_by_time_window(
+            vec![before, overlapping, inside, after],
+            Some(window_start),
+            Some(window_end),
+        );
+        let titles = filtered
+            .iter()
+            .filter_map(|session| session.title.as_deref())
+            .collect::<Vec<_>>();
+
+        assert_eq!(titles, vec!["overlapping", "inside"]);
+        Ok(())
+    }
+
+    #[test]
     fn category_covers_observed_apps() {
         assert_eq!(category_for("com.figma.Desktop", "Figma"), "Design");
         assert_eq!(category_for("com.apple.Preview", "Preview"), "Writing");
@@ -2909,6 +3010,67 @@ mod tests {
             state.current_entity().map(|entity| entity.activity_type),
             Some(ActivityType::Active)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn tracker_state_records_untracked_when_probe_recovers() -> AnyhowResult<()> {
+        let active_start = Local
+            .with_ymd_and_hms(2026, 6, 3, 10, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing active start"))?;
+        let lost_at = Local
+            .with_ymd_and_hms(2026, 6, 3, 10, 1, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing lost time"))?;
+        let recovered_at = Local
+            .with_ymd_and_hms(2026, 6, 3, 10, 3, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing recovered time"))?;
+        let mut state = TrackerState::new(Some(entity()), active_start, 300);
+
+        let active_session = state
+            .apply_sample(None, Some(0.0), lost_at)
+            .ok_or_else(|| anyhow::anyhow!("missing active session"))?;
+        let untracked = state
+            .apply_sample(Some(entity()), Some(0.0), recovered_at)
+            .ok_or_else(|| anyhow::anyhow!("missing untracked session"))?;
+
+        assert_eq!(active_session.activity_type, ActivityType::Active);
+        assert_eq!(active_session.duration_seconds, 60.0);
+        assert_eq!(untracked.activity_type, ActivityType::Untracked);
+        assert_eq!(untracked.duration_seconds, 120.0);
+        assert_eq!(state.session_start(), recovered_at);
+        Ok(())
+    }
+
+    #[test]
+    fn tracker_state_records_untracked_before_idle_recovery() -> AnyhowResult<()> {
+        let unknown_start = Local
+            .with_ymd_and_hms(2026, 6, 3, 10, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing unknown start"))?;
+        let sample_time = Local
+            .with_ymd_and_hms(2026, 6, 3, 10, 10, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing sample time"))?;
+        let idle_start = Local
+            .with_ymd_and_hms(2026, 6, 3, 10, 5, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing idle start"))?;
+        let mut state = TrackerState::new(None, unknown_start, 300);
+
+        let untracked = state
+            .apply_sample(Some(entity()), Some(300.0), sample_time)
+            .ok_or_else(|| anyhow::anyhow!("missing untracked session"))?;
+
+        assert_eq!(untracked.activity_type, ActivityType::Untracked);
+        assert_eq!(untracked.duration_seconds, 300.0);
+        assert_eq!(
+            state.current_entity().map(|entity| entity.activity_type),
+            Some(ActivityType::Idle)
+        );
+        assert_eq!(state.session_start(), idle_start);
         Ok(())
     }
 

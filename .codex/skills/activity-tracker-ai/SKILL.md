@@ -15,13 +15,15 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 2. Use `cargo run -- report YYYY-MM-DD --json` for the one-call AI payload: summary, sessions, open checkpoint, and paths.
 3. Use `cargo run -- timeline YYYY-MM-DD --json` for compact ordered blocks grouped by app/domain/category.
 4. Use `cargo run -- audit YYYY-MM-DD --json` to inspect log quality gaps, overlaps, invalid rows, and open checkpoint state.
-5. Use `cargo run -- day YYYY-MM-DD --json` for daily summaries.
-6. Use `cargo run -- logs YYYY-MM-DD --json` for raw sessions.
-7. Narrow logs with `--app`, `--title`, `--category`, `--domain`, `--activity-type active|idle`, and `--limit`.
-8. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
-9. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
-10. After category rule changes, run `cargo run -- reclassify --dry-run --json`, then rerun without `--dry-run`.
-11. After auditing gaps, run `cargo run -- repair-gaps --dry-run --json`, then rerun without `--dry-run` to insert explicit untracked sessions.
+5. Use `cargo run -- query --from YYYY-MM-DD --to YYYY-MM-DD --json` for cross-day search payloads with summary, compact timeline, sessions, filters, and open checkpoint.
+6. Omit `--from` and `--to` on `query` for all-history search.
+7. Use `cargo run -- day YYYY-MM-DD --json` for daily summaries.
+8. Use `cargo run -- logs YYYY-MM-DD --json` for one-day raw sessions.
+9. Narrow `query` or `logs` with `--app`, `--title`, `--category`, `--domain`, `--activity-type active|idle|untracked`, and `--limit`.
+10. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
+11. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
+12. After category rule changes, run `cargo run -- reclassify --dry-run --json`, then rerun without `--dry-run`.
+13. After auditing gaps, run `cargo run -- repair-gaps --dry-run --json`, then rerun without `--dry-run` to insert explicit untracked sessions.
 
 ## Operations
 
@@ -37,10 +39,11 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Keep storage/query code testable without macOS permissions.
 - Persist each completed session immediately to SQLite and mirror it to JSONL; CSV is derived.
 - Maintain the SQLite `open_session` heartbeat so crash/restart recovery does not lose the active span.
-- Include the provisional open session in live query commands (`day`, `logs`, `summary`, `report`) when it overlaps the query.
+- Include the provisional open session in live query commands (`day`, `logs`, `query`, `summary`, `report`) when it overlaps the query.
 - Use app identity plus browser URL domains for categories; reclassify stored sessions when mappings change.
 - Preserve current session through short active-app probe misses; only create gaps after repeated misses.
 - Record idle as `activity_type: "idle"` with `bundle_id: "local.activity_tracker.idle"` once HID idle time crosses threshold.
+- Record longer unknown/probe-unavailable spans as `activity_type: "untracked"` when probing recovers.
 - Repair real gaps as `activity_type: "untracked"` with `bundle_id: "local.activity_tracker.untracked"` rather than hiding missing time.
 - Day math must include overlapping sessions and clip summary duration to local day bounds.
 - Add `--json` for new read commands so AI tools can consume them.

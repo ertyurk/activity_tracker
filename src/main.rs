@@ -10,11 +10,11 @@ use activity_tracker::{
     ActivityProbe, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS, DEFAULT_IDLE_THRESHOLD_SECONDS,
     DEFAULT_INTERVAL_SECONDS, DEFAULT_PROBE_MISS_TOLERANCE, DEFAULT_RECENT_CHECKPOINT_SECONDS,
     LogStore, MacOsProbe, ProbeMissStabilizer, Result, TrackerError, TrackerState, UsageSession,
-    audit_sessions, day_bounds, filter_sessions, format_seconds, install_launch_agent,
-    legacy_data_dir, legacy_sessions_path, parse_date, service_status, service_status_report,
-    summarize_all, summarize_day, timeline_blocks, uninstall_launch_agent,
+    audit_sessions, day_bounds, filter_sessions, filter_sessions_by_time_window, format_seconds,
+    install_launch_agent, legacy_data_dir, legacy_sessions_path, parse_date, service_status,
+    service_status_report, summarize_all, summarize_day, timeline_blocks, uninstall_launch_agent,
 };
-use chrono::{Local, NaiveDate};
+use chrono::{DateTime, Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use tracing_subscriber::EnvFilter;
 
@@ -42,6 +42,8 @@ enum Command {
     Report(ReportArgs),
     /// Print compact one-day timeline blocks. Defaults to today.
     Timeline(TimelineArgs),
+    /// Query sessions across an optional date range.
+    Query(QueryArgs),
     /// Print raw sessions. Defaults to today.
     Logs(LogsArgs),
     /// Audit one-day log quality for gaps, overlaps, and invalid rows.
@@ -91,6 +93,28 @@ struct ReportArgs {
 #[derive(Debug, Args)]
 struct TimelineArgs {
     date: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct QueryArgs {
+    #[arg(long)]
+    from: Option<String>,
+    #[arg(long)]
+    to: Option<String>,
+    #[arg(long)]
+    app: Option<String>,
+    #[arg(long)]
+    title: Option<String>,
+    #[arg(long)]
+    category: Option<String>,
+    #[arg(long)]
+    domain: Option<String>,
+    #[arg(long)]
+    activity_type: Option<String>,
+    #[arg(long)]
+    limit: Option<usize>,
     #[arg(long)]
     json: bool,
 }
@@ -219,6 +243,7 @@ fn run() -> Result<()> {
         Command::Day(args) => print_day(&store, args),
         Command::Report(args) => print_report(&store, args),
         Command::Timeline(args) => print_timeline(&store, args),
+        Command::Query(args) => print_query(&store, args),
         Command::Logs(args) => print_logs(&store, args),
         Command::Audit(args) => print_audit(&store, args),
         Command::Summary(args) => print_summary(&store, args),
@@ -394,6 +419,51 @@ fn print_timeline(store: &LogStore, args: TimelineArgs) -> Result<()> {
                 block.title.unwrap_or_default()
             );
         }
+        Ok(())
+    }
+}
+
+fn print_query(store: &LogStore, args: QueryArgs) -> Result<()> {
+    let window = query_window(args.from.as_deref(), args.to.as_deref())?;
+    let now = Local::now();
+    let sessions = store.load_sessions_with_open(now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
+    let sessions = filter_sessions_by_time_window(sessions, window.start, window.end);
+    let sessions = filter_sessions(
+        sessions,
+        args.app.as_deref(),
+        args.title.as_deref(),
+        args.category.as_deref(),
+        args.domain.as_deref(),
+        args.activity_type.as_deref(),
+        args.limit,
+    );
+    let summary = summarize_all(&sessions);
+    let timeline = timeline_blocks(&sessions);
+
+    if args.json {
+        let value = serde_json::json!({
+            "generated_at": now,
+            "from": window.from,
+            "to": window.to,
+            "window_start": window.start,
+            "window_end": window.end,
+            "filters": {
+                "app": args.app.as_deref(),
+                "title": args.title.as_deref(),
+                "category": args.category.as_deref(),
+                "domain": args.domain.as_deref(),
+                "activity_type": args.activity_type.as_deref(),
+                "limit": args.limit,
+            },
+            "summary": summary,
+            "timeline": timeline,
+            "sessions": sessions,
+            "open_session": store.open_session_checkpoint()?,
+        });
+        print_json(&value)
+    } else {
+        print_summary_text(None, &summary);
+        print_session_rows(&sessions);
         Ok(())
     }
 }
@@ -698,6 +768,41 @@ fn write_jsonl(path: &PathBuf, sessions: &[UsageSession]) -> Result<()> {
 
 fn date_or_today(input: Option<&str>) -> Result<NaiveDate> {
     input.map_or_else(|| Ok(Local::now().date_naive()), parse_date)
+}
+
+#[derive(Debug)]
+struct QueryWindow {
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+    start: Option<DateTime<Local>>,
+    end: Option<DateTime<Local>>,
+}
+
+fn query_window(from: Option<&str>, to: Option<&str>) -> Result<QueryWindow> {
+    let from_date = from.map(parse_date).transpose()?;
+    let to_date = to.map(parse_date).transpose()?;
+    if let (Some(from_date), Some(to_date)) = (from_date, to_date)
+        && to_date < from_date
+    {
+        return Err(TrackerError::InvalidDateRange {
+            from: from.unwrap_or_default().to_string(),
+            to: to.unwrap_or_default().to_string(),
+        });
+    }
+
+    let start = from_date
+        .map(|date| day_bounds(date).map(|(start, _)| start))
+        .transpose()?;
+    let end = to_date
+        .map(|date| day_bounds(date).map(|(_, end)| end))
+        .transpose()?;
+
+    Ok(QueryWindow {
+        from: from_date,
+        to: to_date,
+        start,
+        end,
+    })
 }
 
 fn default_export_path(

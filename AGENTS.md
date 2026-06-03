@@ -2,7 +2,7 @@
 
 ## Mission
 
-Build `activity_tracker` into a reliable local-first macOS activity history service substrate. It should run quietly in the background, append durable logs, preserve enough context for useful retrospection, and expose AI-friendly CLI commands for querying history by day, app, title, category, URL/domain, and export format. A SwiftUI app and internal AI reporting agent will sit on top later; do not build that UI here.
+Build `activity_tracker` into a reliable local-first macOS activity history service substrate. It should run quietly in the background, append durable logs, preserve enough context for useful retrospection, and expose AI-friendly CLI commands for querying history by day/range, app, title, category, URL/domain, and export format. A SwiftUI app and internal AI reporting agent will sit on top later; do not build that UI here.
 
 ## Product Rules
 
@@ -12,6 +12,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - Categories should use app identity and browser URL domain when available; run `reclassify` after category rules improve.
 - Preserve `activity_type` and treat idle as first-class log data, not as foreground app time.
 - Preserve audited gaps as explicit `activity_type: "untracked"` sessions when repairing coverage.
+- Preserve longer unknown/probe-unavailable spans as `activity_type: "untracked"` when the collector recovers.
 - Keep an `open_session` heartbeat checkpoint so service restarts recover the current span instead of dropping it.
 - Live query commands should include the current open session provisionally; exports should stay completed-session based.
 - Tolerate brief active-app probe misses; do not turn transient macOS/AppleScript failures into fake gaps.
@@ -39,6 +40,8 @@ cargo run -- service status --json
 cargo run -- day 2026-06-03 --json
 cargo run -- report 2026-06-03 --json
 cargo run -- timeline 2026-06-03 --json
+cargo run -- query --from 2026-06-03 --to 2026-06-03 --domain github --json
+cargo run -- query --category Development --limit 50 --json
 cargo run -- audit 2026-06-03 --json
 cargo run -- logs 2026-06-03 --domain github --json
 cargo run -- logs 2026-06-03 --title project --json
