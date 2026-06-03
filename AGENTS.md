@@ -20,6 +20,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - Preserve longer unknown/probe-unavailable spans as `activity_type: "untracked"` when the collector recovers.
 - Keep an `open_session` heartbeat checkpoint so service restarts recover the current span instead of dropping it.
 - Live query commands should include the current open session provisionally; exports should stay completed-session based.
+- Windowed summaries and timelines must clip overlapping sessions to the requested day/range/last-minutes bounds; raw session arrays may keep original persisted bounds for audit/debug context.
 - Agent/report readiness and quality gates should be scoped to the requested window; include today-wide audit as separate background context.
 - `query` and `logs` should support narrow filters plus broad `--text` recall across app, bundle, title, URL, domain, category, and activity type.
 - Keep window-scoped quality issue samples in `agent --json`; compact today-wide audit samples to keep payload bounded.

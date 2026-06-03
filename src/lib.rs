@@ -1639,6 +1639,29 @@ pub fn summarize_day(sessions: &[UsageSession], date: NaiveDate) -> Result<Activ
 }
 
 #[must_use]
+pub fn summarize_window(
+    sessions: &[UsageSession],
+    window_start: Option<DateTime<Local>>,
+    window_end: Option<DateTime<Local>>,
+) -> ActivitySummary {
+    summarize_with_seconds(sessions, |session| {
+        session_seconds_within_window(session, window_start, window_end)
+    })
+}
+
+#[must_use]
+pub fn clip_sessions_to_window(
+    sessions: &[UsageSession],
+    window_start: Option<DateTime<Local>>,
+    window_end: Option<DateTime<Local>>,
+) -> Vec<UsageSession> {
+    sessions
+        .iter()
+        .filter_map(|session| clipped_session(session, window_start, window_end))
+        .collect()
+}
+
+#[must_use]
 pub fn audit_sessions(sessions: &[UsageSession], gap_threshold_seconds: f64) -> ActivityAudit {
     let mut sorted = sessions.to_vec();
     sorted.sort_by_key(|session| (session.start_time, session.end_time));
@@ -2804,6 +2827,44 @@ fn sorted_rows(map: HashMap<String, f64>, total_seconds: f64) -> Vec<SummaryRow>
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     rows
+}
+
+fn session_seconds_within_window(
+    session: &UsageSession,
+    window_start: Option<DateTime<Local>>,
+    window_end: Option<DateTime<Local>>,
+) -> f64 {
+    let (start, end) = session_window_bounds(session, window_start, window_end);
+    seconds_between(start, end).unwrap_or(0.0)
+}
+
+fn clipped_session(
+    session: &UsageSession,
+    window_start: Option<DateTime<Local>>,
+    window_end: Option<DateTime<Local>>,
+) -> Option<UsageSession> {
+    let (start_time, end_time) = session_window_bounds(session, window_start, window_end);
+    seconds_between(start_time, end_time).map(|duration_seconds| {
+        let mut clipped = session.clone();
+        clipped.start_time = start_time;
+        clipped.end_time = end_time;
+        clipped.duration_seconds = duration_seconds;
+        clipped
+    })
+}
+
+fn session_window_bounds(
+    session: &UsageSession,
+    window_start: Option<DateTime<Local>>,
+    window_end: Option<DateTime<Local>>,
+) -> (DateTime<Local>, DateTime<Local>) {
+    let start = window_start.map_or(session.start_time, |window_start| {
+        max_datetime(session.start_time, window_start)
+    });
+    let end = window_end.map_or(session.end_time, |window_end| {
+        min_datetime(session.end_time, window_end)
+    });
+    (start, end)
 }
 
 fn quality_rows<I>(names: I) -> Vec<AuditQualityRow>
@@ -4923,6 +4984,67 @@ mod tests {
 
         assert_eq!(summary.total_seconds, 60.0);
         assert_eq!(summary.by_activity_type.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn window_summary_clips_overlapping_sessions() -> AnyhowResult<()> {
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 7, 30, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let end = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 30, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing end"))?;
+        let window_start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing window start"))?;
+        let window_end = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 10, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing window end"))?;
+        let session = UsageSession::from_entity(&entity(), start, end)
+            .ok_or_else(|| anyhow::anyhow!("missing session"))?;
+
+        let summary = summarize_window(&[session], Some(window_start), Some(window_end));
+
+        assert_eq!(summary.total_seconds, 600.0);
+        assert_eq!(summary.by_app.first().map(|row| row.seconds), Some(600.0));
+        Ok(())
+    }
+
+    #[test]
+    fn clip_sessions_to_window_updates_bounds_and_duration() -> AnyhowResult<()> {
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 7, 30, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let end = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 30, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing end"))?;
+        let window_start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing window start"))?;
+        let window_end = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 10, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing window end"))?;
+        let session = UsageSession::from_entity(&entity(), start, end)
+            .ok_or_else(|| anyhow::anyhow!("missing session"))?;
+
+        let clipped = clip_sessions_to_window(&[session], Some(window_start), Some(window_end));
+        let clipped_session = clipped
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("missing clipped session"))?;
+
+        assert_eq!(clipped.len(), 1);
+        assert_eq!(clipped_session.start_time, window_start);
+        assert_eq!(clipped_session.end_time, window_end);
+        assert_eq!(clipped_session.duration_seconds, 600.0);
         Ok(())
     }
 

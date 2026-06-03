@@ -11,10 +11,11 @@ use activity_tracker::{
     DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS, DEFAULT_IDLE_THRESHOLD_SECONDS,
     DEFAULT_INTERVAL_SECONDS, DEFAULT_PROBE_MISS_TOLERANCE, DEFAULT_RECENT_CHECKPOINT_SECONDS,
     LogStore, MacOsProbe, ProbeMissStabilizer, QueryTimeWindow, QueryTimeWindowInput, Result,
-    SessionFilterInput, TrackerError, TrackerState, UsageSession, audit_sessions, day_bounds,
-    filter_sessions, format_seconds, install_launch_agent, legacy_data_dir, legacy_sessions_path,
-    parse_date, query_time_window, service_status, service_status_report, summarize_all,
-    summarize_day, timeline_blocks, uninstall_launch_agent,
+    SessionFilterInput, TrackerError, TrackerState, UsageSession, audit_sessions,
+    clip_sessions_to_window, day_bounds, filter_sessions, format_seconds, install_launch_agent,
+    legacy_data_dir, legacy_sessions_path, parse_date, query_time_window, service_status,
+    service_status_report, summarize_all, summarize_day, summarize_window, timeline_blocks,
+    uninstall_launch_agent,
 };
 use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -478,8 +479,9 @@ fn print_report(store: &LogStore, args: ReportArgs) -> Result<()> {
     let sessions =
         store.sessions_for_day_with_open(date, now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
     let summary = summarize_day(&sessions, date)?;
-    let timeline = timeline_blocks(&sessions);
     let (day_start, day_end) = day_bounds(date)?;
+    let clipped_sessions = clip_sessions_to_window(&sessions, Some(day_start), Some(day_end));
+    let timeline = timeline_blocks(&clipped_sessions);
     let includes_active_session = active_session
         .as_ref()
         .is_some_and(|session| session.overlaps(day_start, day_end));
@@ -514,7 +516,9 @@ fn print_timeline(store: &LogStore, args: TimelineArgs) -> Result<()> {
     let date = date_or_today(args.date.as_deref())?;
     let sessions =
         store.sessions_for_day_with_open(date, Local::now(), DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
-    let timeline = timeline_blocks(&sessions);
+    let (day_start, day_end) = day_bounds(date)?;
+    let clipped_sessions = clip_sessions_to_window(&sessions, Some(day_start), Some(day_end));
+    let timeline = timeline_blocks(&clipped_sessions);
     if args.json {
         print_json(&timeline)
     } else {
@@ -566,8 +570,9 @@ fn print_query(store: &LogStore, args: QueryArgs) -> Result<()> {
             limit: args.limit,
         },
     );
-    let summary = summarize_all(&sessions);
-    let timeline = timeline_blocks(&sessions);
+    let summary = summarize_window(&sessions, window.start, window.end);
+    let clipped_sessions = clip_sessions_to_window(&sessions, window.start, window.end);
+    let timeline = timeline_blocks(&clipped_sessions);
 
     if args.json {
         let value = serde_json::json!({
@@ -1025,10 +1030,11 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
         window_end,
         repair_window,
     )?;
-    let summary = summarize_all(&sessions);
+    let summary = summarize_window(&sessions, window_start, window_end);
     let summary_truncated = summary_rows_truncated(&summary, args.summary_limit);
     let summary = limit_summary(summary, args.summary_limit);
-    let timeline = timeline_blocks(&sessions);
+    let clipped_sessions = clip_sessions_to_window(&sessions, window_start, window_end);
+    let timeline = timeline_blocks(&clipped_sessions);
     let timeline_count = timeline.len();
     let timeline = limit_timeline_blocks(timeline, args.timeline_limit);
     let timeline_truncated = timeline_count > timeline.len();
