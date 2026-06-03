@@ -41,6 +41,8 @@ const DEFAULT_AGENT_SUMMARY_LIMIT: usize = 12;
 struct Cli {
     #[arg(long, global = true, value_name = "DIR")]
     data_dir: Option<PathBuf>,
+    #[arg(long, global = true)]
+    json: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -508,7 +510,9 @@ fn tracker_error_code(error: &TrackerError) -> &'static str {
     }
 }
 
-fn run(cli: Cli) -> Result<()> {
+fn run(mut cli: Cli) -> Result<()> {
+    apply_global_json(&mut cli.command, cli.json);
+
     let store = match cli.data_dir {
         Some(path) => LogStore::new(path),
         None => LogStore::from_env()?,
@@ -540,6 +544,59 @@ fn run(cli: Cli) -> Result<()> {
         Command::Doctor(args) => doctor(&store, args),
         Command::Verify(args) => print_verify(&store, args),
         Command::Service(command) => run_service(&store, command),
+    }
+}
+
+fn apply_global_json(command: &mut Option<Command>, enabled: bool) {
+    if !enabled {
+        return;
+    }
+
+    if let Some(command) = command {
+        command.enable_json();
+    }
+}
+
+impl Command {
+    fn enable_json(&mut self) {
+        match self {
+            Command::Track(_) => {}
+            Command::Day(args) => args.json = true,
+            Command::Report(args) => args.json = true,
+            Command::Timeline(args) => args.json = true,
+            Command::Query(args) => args.json = true,
+            Command::Logs(args) => args.json = true,
+            Command::Audit(args) => args.json = true,
+            Command::Summary(args) => args.json = true,
+            Command::Inventory(args) => args.json = true,
+            Command::Export(args) => args.json = true,
+            Command::ImportCsv(args) => args.json = true,
+            Command::Reclassify(args) => args.json = true,
+            Command::RepairGaps(args) => args.json = true,
+            Command::RepairTitles(args) => args.json = true,
+            Command::RepairUrls(args) => args.json = true,
+            Command::RepairContext(args) => args.json = true,
+            Command::RepairMirror(args) => args.json = true,
+            Command::Paths(args) => args.json = true,
+            Command::Schema(args) => args.json = true,
+            Command::Now(args) => args.json = true,
+            Command::Health(args) => args.json = true,
+            Command::Agent(args) => args.json = true,
+            Command::Doctor(args) => args.json = true,
+            Command::Verify(args) => args.json = true,
+            Command::Service(args) => args.enable_json(),
+        }
+    }
+}
+
+impl ServiceCommand {
+    fn enable_json(&mut self) {
+        match &mut self.action {
+            ServiceAction::Install(args) => args.json = true,
+            ServiceAction::Uninstall(args) => args.json = true,
+            ServiceAction::Status(args) => args.json = true,
+            ServiceAction::Logs(args) => args.json = true,
+        }
     }
 }
 
@@ -1198,7 +1255,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     ];
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 17,
+            "schema_version": 18,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1212,6 +1269,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "exports": store.exports_dir(),
                 "logs": store.logs_dir(),
             },
+            "global_args": ["--data-dir", "--json"],
             "defaults": {
                 "track_interval_seconds": DEFAULT_INTERVAL_SECONDS,
                 "idle_threshold_seconds": DEFAULT_IDLE_THRESHOLD_SECONDS,
@@ -1476,7 +1534,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 17");
+        println!("schema_version: 18");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
@@ -3078,6 +3136,40 @@ mod tests {
         assert!(args_request_json(["activity_tracker", "query", "--json"]));
         assert!(args_request_json(["activity_tracker", "--json", "doctor"]));
         assert!(!args_request_json(["activity_tracker", "query"]));
+    }
+
+    #[test]
+    fn global_json_flag_is_applied_to_commands() -> anyhow::Result<()> {
+        let mut cli = Cli::try_parse_from(["activity_tracker", "--json", "doctor"])?;
+        apply_global_json(&mut cli.command, cli.json);
+
+        assert!(matches!(
+            cli,
+            Cli {
+                json: true,
+                command: Some(Command::Doctor(OutputArgs { json: true })),
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn global_json_flag_is_applied_to_service_commands() -> anyhow::Result<()> {
+        let mut cli = Cli::try_parse_from(["activity_tracker", "--json", "service", "status"])?;
+        apply_global_json(&mut cli.command, cli.json);
+
+        assert!(matches!(
+            cli,
+            Cli {
+                json: true,
+                command: Some(Command::Service(ServiceCommand {
+                    action: ServiceAction::Status(OutputArgs { json: true }),
+                })),
+                ..
+            }
+        ));
+        Ok(())
     }
 
     #[test]
