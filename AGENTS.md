@@ -36,6 +36,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - Use `repair-context` only for high-confidence browser title/URL mismatch or missing-context repairs with neighbor or exact-URL evidence.
 - Day queries must handle cross-midnight sessions by overlap, not only start date.
 - Background mode should use `launchd` via `activity_tracker service install`.
+- `service install` should persist configured `--interval-seconds` and `--idle-threshold-seconds` into LaunchAgent arguments.
 - CLI output should support plain text for humans and `--json` for agents; quality commands should expose both time coverage and context richness.
 
 ## Rust Rules

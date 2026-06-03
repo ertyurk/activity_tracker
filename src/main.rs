@@ -10,12 +10,12 @@ use activity_tracker::{
     ActivityAudit, ActivityProbe, BrowserContextStabilizer, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS,
     DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS, DEFAULT_IDLE_THRESHOLD_SECONDS,
     DEFAULT_INTERVAL_SECONDS, DEFAULT_PROBE_MISS_TOLERANCE, DEFAULT_RECENT_CHECKPOINT_SECONDS,
-    LogStore, MacOsProbe, ProbeMissStabilizer, QueryTimeWindow, QueryTimeWindowInput, Result,
-    SessionFilterInput, TrackerError, TrackerState, UsageSession, audit_sessions,
-    audit_sessions_in_window, clip_sessions_to_window, day_bounds, filter_sessions, format_seconds,
-    install_launch_agent, inventory_for_sessions, legacy_data_dir, legacy_sessions_path,
-    parse_date, query_time_window, service_status, service_status_report, summarize_all,
-    summarize_day, summarize_window, timeline_blocks, uninstall_launch_agent,
+    LaunchAgentConfig, LogStore, MacOsProbe, ProbeMissStabilizer, QueryTimeWindow,
+    QueryTimeWindowInput, Result, SessionFilterInput, TrackerError, TrackerState, UsageSession,
+    audit_sessions, audit_sessions_in_window, clip_sessions_to_window, day_bounds, filter_sessions,
+    format_seconds, install_launch_agent, inventory_for_sessions, legacy_data_dir,
+    legacy_sessions_path, parse_date, query_time_window, service_status, service_status_report,
+    summarize_all, summarize_day, summarize_window, timeline_blocks, uninstall_launch_agent,
 };
 use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -340,6 +340,10 @@ enum ServiceAction {
 struct ServiceInstallArgs {
     #[arg(long)]
     bin: Option<PathBuf>,
+    #[arg(long, default_value_t = DEFAULT_INTERVAL_SECONDS)]
+    interval_seconds: u64,
+    #[arg(long, default_value_t = DEFAULT_IDLE_THRESHOLD_SECONDS)]
+    idle_threshold_seconds: u64,
     #[arg(long)]
     no_load: bool,
 }
@@ -1046,6 +1050,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
             ],
             "window_args": ["--from", "--to", "--since", "--until", "--last-minutes"],
             "filters": ["--app", "--title", "--url", "--text", "--category", "--domain", "--activity-type", "--limit"],
+            "service_install_args": ["--bin", "--interval-seconds", "--idle-threshold-seconds", "--no-load"],
             "read_commands": [
                 "agent",
                 "audit",
@@ -1494,7 +1499,11 @@ fn run_service(store: &LogStore, command: ServiceCommand) -> Result<()> {
                 Some(path) => path,
                 None => std::env::current_exe()?,
             };
-            let plist = install_launch_agent(&binary, store, !args.no_load)?;
+            let config = LaunchAgentConfig {
+                interval_seconds: args.interval_seconds,
+                idle_threshold_seconds: args.idle_threshold_seconds,
+            };
+            let plist = install_launch_agent(&binary, store, config, !args.no_load)?;
             println!("{}", plist.display());
             Ok(())
         }

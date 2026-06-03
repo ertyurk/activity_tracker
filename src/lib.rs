@@ -26,6 +26,21 @@ pub const SERVICE_LABEL: &str = "com.local.activity-tracker";
 pub const IDLE_BUNDLE_ID: &str = "local.activity_tracker.idle";
 pub const UNTRACKED_BUNDLE_ID: &str = "local.activity_tracker.untracked";
 
+#[derive(Debug, Clone, Copy)]
+pub struct LaunchAgentConfig {
+    pub interval_seconds: u64,
+    pub idle_threshold_seconds: u64,
+}
+
+impl Default for LaunchAgentConfig {
+    fn default() -> Self {
+        Self {
+            interval_seconds: DEFAULT_INTERVAL_SECONDS,
+            idle_threshold_seconds: DEFAULT_IDLE_THRESHOLD_SECONDS,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum TrackerError {
     #[error("I/O error: {0}")]
@@ -2719,7 +2734,12 @@ pub fn parse_hid_idle_nanoseconds(output: &str) -> Option<u64> {
     })
 }
 
-pub fn install_launch_agent(binary: &Path, store: &LogStore, load: bool) -> Result<PathBuf> {
+pub fn install_launch_agent(
+    binary: &Path,
+    store: &LogStore,
+    config: LaunchAgentConfig,
+    load: bool,
+) -> Result<PathBuf> {
     store.ensure_dirs()?;
     let plist_path = launch_agent_path()?;
     if let Some(parent) = plist_path.parent() {
@@ -2728,7 +2748,7 @@ pub fn install_launch_agent(binary: &Path, store: &LogStore, load: bool) -> Resu
 
     let stdout = store.logs_dir().join("launchd.out.log");
     let stderr = store.logs_dir().join("launchd.err.log");
-    let plist = launch_agent_plist(binary, &stdout, &stderr);
+    let plist = launch_agent_plist(binary, &stdout, &stderr, config);
 
     if load {
         let _bootout_result = launchctl_bootout();
@@ -2806,7 +2826,14 @@ fn parse_service_pid(line: &str) -> Option<u32> {
 }
 
 #[must_use]
-pub fn launch_agent_plist(binary: &Path, stdout: &Path, stderr: &Path) -> String {
+pub fn launch_agent_plist(
+    binary: &Path,
+    stdout: &Path,
+    stderr: &Path,
+    config: LaunchAgentConfig,
+) -> String {
+    let interval_seconds = config.interval_seconds.max(1);
+    let idle_threshold_seconds = config.idle_threshold_seconds;
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -2819,6 +2846,10 @@ pub fn launch_agent_plist(binary: &Path, stdout: &Path, stderr: &Path) -> String
     <string>{binary}</string>
     <string>track</string>
     <string>--quiet</string>
+    <string>--interval-seconds</string>
+    <string>{interval_seconds}</string>
+    <string>--idle-threshold-seconds</string>
+    <string>{idle_threshold_seconds}</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -2834,7 +2865,9 @@ pub fn launch_agent_plist(binary: &Path, stdout: &Path, stderr: &Path) -> String
         label = SERVICE_LABEL,
         binary = xml_escape(&binary.display().to_string()),
         stdout = xml_escape(&stdout.display().to_string()),
-        stderr = xml_escape(&stderr.display().to_string())
+        stderr = xml_escape(&stderr.display().to_string()),
+        interval_seconds = interval_seconds,
+        idle_threshold_seconds = idle_threshold_seconds,
     )
 }
 
@@ -6479,8 +6512,16 @@ mod tests {
             Path::new("/tmp/activity_tracker"),
             Path::new("/tmp/out.log"),
             Path::new("/tmp/err.log"),
+            LaunchAgentConfig {
+                interval_seconds: 7,
+                idle_threshold_seconds: 120,
+            },
         );
         assert!(plist.contains("<string>track</string>"));
         assert!(plist.contains("<string>--quiet</string>"));
+        assert!(plist.contains("<string>--interval-seconds</string>"));
+        assert!(plist.contains("<string>7</string>"));
+        assert!(plist.contains("<string>--idle-threshold-seconds</string>"));
+        assert!(plist.contains("<string>120</string>"));
     }
 }

@@ -45,7 +45,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Current activity: `cargo run -- now --json`
 - AI/reporting hook: `cargo run -- agent --json`
 - Foreground tracking: `cargo run -- track`
-- Background install: `cargo run --release -- service install`
+- Background install: `cargo run --release -- service install --interval-seconds 2 --idle-threshold-seconds 300`
 - Background status: `cargo run -- service status --json`
 - Background remove: `cargo run -- service uninstall`
 - CSV import: `cargo run -- import-csv ~/Desktop/usage_stats.csv --json`
@@ -84,6 +84,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Use `repair-titles` to backfill native app title gaps and exact-URL browser title gaps after title capture changes; do not mask browser misses with synthetic titles.
 - Use `repair-urls` to canonicalize known or blank-tab-surrounded URLs; do not infer ordinary missing browser URLs from surrounding sessions.
 - Preserve current session through short active-app probe misses; only create gaps after repeated misses.
+- Keep `service install` LaunchAgent arguments aligned with configured sample interval and idle threshold.
 - Canonicalize known browser blank tabs as `about:newtab` and keep them separate from actionable missing-URL audit rows.
 - Record idle as `activity_type: "idle"` with `bundle_id: "local.activity_tracker.idle"` once HID idle time crosses threshold.
 - Record longer unknown/probe-unavailable spans as `activity_type: "untracked"` when probing recovers.

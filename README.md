@@ -176,16 +176,18 @@ Day summaries include sessions overlapping that local day and clip cross-midnigh
 
 ```bash
 activity_tracker service install
+activity_tracker service install --interval-seconds 2 --idle-threshold-seconds 300
 activity_tracker service status --json
 activity_tracker service uninstall
 ```
 
-`service install` writes `~/Library/LaunchAgents/com.local.activity-tracker.plist`, loads it, and starts `activity_tracker track --quiet`.
+`service install` writes `~/Library/LaunchAgents/com.local.activity-tracker.plist`, loads it, and starts `activity_tracker track --quiet` with persisted interval and idle-threshold arguments.
 
-Default idle threshold is 300 seconds. Foreground runs can override it:
+Default idle threshold is 300 seconds and default sampling interval is 2 seconds. Foreground or service runs can override them:
 
 ```bash
 activity_tracker track --idle-threshold-seconds 120
+activity_tracker service install --idle-threshold-seconds 120
 ```
 
 ## Development
