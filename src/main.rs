@@ -13,9 +13,9 @@ use activity_tracker::{
     LogStore, MacOsProbe, ProbeMissStabilizer, QueryTimeWindow, QueryTimeWindowInput, Result,
     SessionFilterInput, TrackerError, TrackerState, UsageSession, audit_sessions,
     clip_sessions_to_window, day_bounds, filter_sessions, format_seconds, install_launch_agent,
-    legacy_data_dir, legacy_sessions_path, parse_date, query_time_window, service_status,
-    service_status_report, summarize_all, summarize_day, summarize_window, timeline_blocks,
-    uninstall_launch_agent,
+    inventory_for_sessions, legacy_data_dir, legacy_sessions_path, parse_date, query_time_window,
+    service_status, service_status_report, summarize_all, summarize_day, summarize_window,
+    timeline_blocks, uninstall_launch_agent,
 };
 use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -58,6 +58,8 @@ enum Command {
     Audit(AuditArgs),
     /// Print all-time summary.
     Summary(OutputArgs),
+    /// Print windowed app/domain/category inventory for filters and agents.
+    Inventory(InventoryArgs),
     /// Export sessions to CSV or JSONL.
     Export(ExportArgs),
     /// Import legacy/exported CSV into local storage with duplicate skipping.
@@ -225,6 +227,16 @@ struct OutputArgs {
 }
 
 #[derive(Debug, Args)]
+struct InventoryArgs {
+    #[command(flatten)]
+    window: RepairWindowArgs,
+    #[arg(long)]
+    limit: Option<usize>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
 struct ExportArgs {
     #[arg(long)]
     date: Option<String>,
@@ -352,6 +364,7 @@ fn run() -> Result<()> {
         Command::Logs(args) => print_logs(&store, args),
         Command::Audit(args) => print_audit(&store, args),
         Command::Summary(args) => print_summary(&store, args),
+        Command::Inventory(args) => print_inventory(&store, args),
         Command::Export(args) => export_sessions(&store, args),
         Command::ImportCsv(args) => import_csv(&store, args),
         Command::Reclassify(args) => reclassify(&store, args),
@@ -709,6 +722,56 @@ fn print_summary(store: &LogStore, args: OutputArgs) -> Result<()> {
         print_json(&summary)
     } else {
         print_summary_text(None, &summary);
+        Ok(())
+    }
+}
+
+fn print_inventory(store: &LogStore, args: InventoryArgs) -> Result<()> {
+    let now = Local::now();
+    let window = repair_window(&args.window, now)?;
+    let sessions = store.sessions_in_window_with_open(
+        window.start,
+        window.end,
+        now,
+        DEFAULT_RECENT_CHECKPOINT_SECONDS,
+    )?;
+    let inventory = inventory_for_sessions(&sessions, window.start, window.end);
+    let inventory = limit_inventory(inventory, args.limit);
+
+    if args.json {
+        let mut value = serde_json::to_value(&inventory)?;
+        if let Some(object) = value.as_object_mut() {
+            object.insert("generated_at".to_string(), serde_json::json!(now));
+            object.insert("limit".to_string(), serde_json::json!(args.limit));
+            object.insert(
+                "window".to_string(),
+                serde_json::json!({
+                    "from": window.from,
+                    "to": window.to,
+                    "since": window.since,
+                    "until": window.until,
+                    "last_minutes": window.last_minutes,
+                    "start": window.start,
+                    "end": window.end,
+                }),
+            );
+        }
+        print_json(&value)
+    } else {
+        print_window_text(&window);
+        if let Some(limit) = args.limit {
+            println!("limit: {limit}");
+        }
+        println!("sessions: {}", inventory.session_count);
+        println!(
+            "total: {} ({:.1}s)",
+            format_seconds(inventory.total_seconds),
+            inventory.total_seconds
+        );
+        print_inventory_rows("by_activity_type", &inventory.by_activity_type);
+        print_inventory_rows("by_category", &inventory.by_category);
+        print_inventory_rows("by_app", &inventory.by_app);
+        print_inventory_rows("by_domain", &inventory.by_domain);
         Ok(())
     }
 }
@@ -1246,6 +1309,27 @@ fn print_rows(label: &str, rows: &[activity_tracker::SummaryRow]) {
     }
 }
 
+fn print_inventory_rows(label: &str, rows: &[activity_tracker::ActivityInventoryRow]) {
+    if rows.is_empty() {
+        return;
+    }
+    println!("{label}:");
+    for row in rows {
+        let secondary = row
+            .secondary
+            .as_deref()
+            .map_or_else(String::new, |value| format!(" ({value})"));
+        println!(
+            "  {}{} | {} | {:.1}% | {} sessions",
+            row.name,
+            secondary,
+            format_seconds(row.seconds),
+            row.percentage,
+            row.session_count
+        );
+    }
+}
+
 fn print_quality_rows(label: &str, rows: &[activity_tracker::AuditQualityRow]) {
     if rows.is_empty() {
         return;
@@ -1559,6 +1643,19 @@ fn limit_summary_rows(
     limit: usize,
 ) -> Vec<activity_tracker::SummaryRow> {
     rows.into_iter().take(limit).collect()
+}
+
+fn limit_inventory(
+    mut inventory: activity_tracker::ActivityInventory,
+    limit: Option<usize>,
+) -> activity_tracker::ActivityInventory {
+    if let Some(limit) = limit {
+        inventory.by_activity_type.truncate(limit);
+        inventory.by_category.truncate(limit);
+        inventory.by_app.truncate(limit);
+        inventory.by_domain.truncate(limit);
+    }
+    inventory
 }
 
 fn repair_window(args: &RepairWindowArgs, now: chrono::DateTime<Local>) -> Result<QueryTimeWindow> {

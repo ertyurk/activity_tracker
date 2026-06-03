@@ -207,6 +207,29 @@ pub struct ActivitySummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ActivityInventory {
+    pub session_count: usize,
+    pub total_seconds: f64,
+    pub by_activity_type: Vec<ActivityInventoryRow>,
+    pub by_category: Vec<ActivityInventoryRow>,
+    pub by_app: Vec<ActivityInventoryRow>,
+    pub by_domain: Vec<ActivityInventoryRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ActivityInventoryRow {
+    pub name: String,
+    pub secondary: Option<String>,
+    pub seconds: f64,
+    pub percentage: f64,
+    pub session_count: usize,
+    pub first_seen: Option<DateTime<Local>>,
+    pub last_seen: Option<DateTime<Local>>,
+    pub latest_title: Option<String>,
+    pub latest_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct TimelineBlock {
     pub start_time: DateTime<Local>,
     pub end_time: DateTime<Local>,
@@ -1662,6 +1685,16 @@ pub fn clip_sessions_to_window(
 }
 
 #[must_use]
+pub fn inventory_for_sessions(
+    sessions: &[UsageSession],
+    window_start: Option<DateTime<Local>>,
+    window_end: Option<DateTime<Local>>,
+) -> ActivityInventory {
+    let clipped = clip_sessions_to_window(sessions, window_start, window_end);
+    inventory_from_clipped_sessions(&clipped)
+}
+
+#[must_use]
 pub fn audit_sessions(sessions: &[UsageSession], gap_threshold_seconds: f64) -> ActivityAudit {
     let mut sorted = sessions.to_vec();
     sorted.sort_by_key(|session| (session.start_time, session.end_time));
@@ -2825,6 +2858,151 @@ fn sorted_rows(map: HashMap<String, f64>, total_seconds: f64) -> Vec<SummaryRow>
         b.seconds
             .partial_cmp(&a.seconds)
             .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    rows
+}
+
+#[derive(Debug, Clone)]
+struct InventoryAccumulator {
+    name: String,
+    secondary: Option<String>,
+    seconds: f64,
+    session_count: usize,
+    first_seen: Option<DateTime<Local>>,
+    last_seen: Option<DateTime<Local>>,
+    latest_title: Option<String>,
+    latest_url: Option<String>,
+}
+
+impl InventoryAccumulator {
+    fn new(name: String, secondary: Option<String>) -> Self {
+        Self {
+            name,
+            secondary,
+            seconds: 0.0,
+            session_count: 0,
+            first_seen: None,
+            last_seen: None,
+            latest_title: None,
+            latest_url: None,
+        }
+    }
+
+    fn add_session(&mut self, session: &UsageSession) {
+        self.seconds += session.duration_seconds;
+        self.session_count = self.session_count.saturating_add(1);
+        self.first_seen = Some(self.first_seen.map_or(session.start_time, |first_seen| {
+            min_datetime(first_seen, session.start_time)
+        }));
+        if self
+            .last_seen
+            .is_none_or(|last_seen| session.end_time >= last_seen)
+        {
+            self.last_seen = Some(session.end_time);
+            self.latest_title = session.title.clone();
+            self.latest_url = session.url.clone();
+        }
+    }
+
+    fn into_row(self, total_seconds: f64) -> ActivityInventoryRow {
+        ActivityInventoryRow {
+            name: self.name,
+            secondary: self.secondary,
+            seconds: self.seconds,
+            percentage: if total_seconds > 0.0 {
+                (self.seconds / total_seconds) * 100.0
+            } else {
+                0.0
+            },
+            session_count: self.session_count,
+            first_seen: self.first_seen,
+            last_seen: self.last_seen,
+            latest_title: self.latest_title,
+            latest_url: self.latest_url,
+        }
+    }
+}
+
+fn inventory_from_clipped_sessions(sessions: &[UsageSession]) -> ActivityInventory {
+    let mut by_activity_type = HashMap::<String, InventoryAccumulator>::new();
+    let mut by_category = HashMap::<String, InventoryAccumulator>::new();
+    let mut by_app = HashMap::<String, InventoryAccumulator>::new();
+    let mut by_domain = HashMap::<String, InventoryAccumulator>::new();
+    let mut total_seconds = 0.0;
+
+    for session in sessions {
+        if session.duration_seconds <= 0.0 {
+            continue;
+        }
+
+        total_seconds += session.duration_seconds;
+        add_inventory_session(
+            &mut by_activity_type,
+            session.activity_type.to_string(),
+            session.activity_type.to_string(),
+            None,
+            session,
+        );
+        add_inventory_session(
+            &mut by_category,
+            session.category.clone(),
+            session.category.clone(),
+            None,
+            session,
+        );
+        add_inventory_session(
+            &mut by_app,
+            session.bundle_id.clone(),
+            session.app_name.clone(),
+            Some(session.bundle_id.clone()),
+            session,
+        );
+        if let Some(domain) = session.url.as_deref().and_then(domain_from_url) {
+            add_inventory_session(&mut by_domain, domain.clone(), domain, None, session);
+        }
+    }
+
+    ActivityInventory {
+        session_count: sessions.len(),
+        total_seconds,
+        by_activity_type: sorted_inventory_rows(by_activity_type, total_seconds),
+        by_category: sorted_inventory_rows(by_category, total_seconds),
+        by_app: sorted_inventory_rows(by_app, total_seconds),
+        by_domain: sorted_inventory_rows(by_domain, total_seconds),
+    }
+}
+
+fn add_inventory_session(
+    rows: &mut HashMap<String, InventoryAccumulator>,
+    key: String,
+    name: String,
+    secondary: Option<String>,
+    session: &UsageSession,
+) {
+    match rows.entry(key) {
+        Entry::Occupied(mut entry) => entry.get_mut().add_session(session),
+        Entry::Vacant(entry) => {
+            let mut accumulator = InventoryAccumulator::new(name, secondary);
+            accumulator.add_session(session);
+            entry.insert(accumulator);
+        }
+    }
+}
+
+fn sorted_inventory_rows(
+    rows: HashMap<String, InventoryAccumulator>,
+    total_seconds: f64,
+) -> Vec<ActivityInventoryRow> {
+    let mut rows: Vec<_> = rows
+        .into_values()
+        .map(|row| row.into_row(total_seconds))
+        .collect();
+    rows.sort_by(|a, b| {
+        b.seconds
+            .partial_cmp(&a.seconds)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.secondary.cmp(&b.secondary))
     });
     rows
 }
@@ -5045,6 +5223,55 @@ mod tests {
         assert_eq!(clipped_session.start_time, window_start);
         assert_eq!(clipped_session.end_time, window_end);
         assert_eq!(clipped_session.duration_seconds, 600.0);
+        Ok(())
+    }
+
+    #[test]
+    fn inventory_for_sessions_returns_clipped_filter_facets() -> AnyhowResult<()> {
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 7, 30, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let window_start = start + seconds_delta(30 * 60)?;
+        let window_end = start + seconds_delta(40 * 60)?;
+        let mut session = browser_session(
+            start,
+            0,
+            60 * 60,
+            Some("Pull Request"),
+            Some("https://github.com/ertyurk/activity_tracker/pull/1"),
+        )?;
+        session.category = "Development".to_string();
+
+        let inventory = inventory_for_sessions(&[session], Some(window_start), Some(window_end));
+
+        assert_eq!(inventory.session_count, 1);
+        assert_eq!(inventory.total_seconds, 600.0);
+        assert_eq!(
+            inventory.by_app.first().map(|row| (
+                row.name.as_str(),
+                row.secondary.as_deref(),
+                row.seconds
+            )),
+            Some(("Google Chrome", Some("com.google.Chrome"), 600.0))
+        );
+        assert_eq!(
+            inventory
+                .by_domain
+                .first()
+                .map(|row| (row.name.as_str(), row.latest_url.as_deref())),
+            Some((
+                "github.com",
+                Some("https://github.com/ertyurk/activity_tracker/pull/1")
+            ))
+        );
+        assert_eq!(
+            inventory
+                .by_category
+                .first()
+                .map(|row| (row.name.as_str(), row.session_count)),
+            Some(("Development", 1))
+        );
         Ok(())
     }
 

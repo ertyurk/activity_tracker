@@ -23,6 +23,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - Windowed summaries and timelines must clip overlapping sessions to the requested day/range/last-minutes bounds; raw session arrays may keep original persisted bounds for audit/debug context.
 - Agent/report readiness and quality gates should be scoped to the requested window; include today-wide audit as separate background context.
 - `query` and `logs` should support narrow filters plus broad `--text` recall across app, bundle, title, URL, domain, category, and activity type.
+- `inventory --json` should provide windowed app/domain/category/activity-type facets for SwiftUI filter menus and AI planning without raw-log scans.
 - Keep window-scoped quality issue samples in `agent --json`; compact today-wide audit samples to keep payload bounded.
 - Keep `agent` repair commands scoped to the same audited window, and keep `reclassify`/repair commands window-aware so agents do not mutate all history for a narrow report.
 - Use `agent.repair_plan.actionable_commands` for automated fixes; `agent.quality.repair_commands` are candidates and may explain non-repairable quality warnings.
@@ -60,6 +61,7 @@ cargo run -- query --from 2026-06-03 --to 2026-06-03 --domain github --json
 cargo run -- query --since 2026-06-03T08:00:00+02:00 --until 2026-06-03T09:00:00+02:00 --json
 cargo run -- query --last-minutes 120 --json
 cargo run -- query --category Development --limit 50 --json
+cargo run -- inventory --last-minutes 240 --limit 20 --json
 cargo run -- audit 2026-06-03 --json
 cargo run -- logs 2026-06-03 --domain github --json
 cargo run -- logs 2026-06-03 --title project --json

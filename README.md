@@ -19,6 +19,7 @@ In-progress local-first macOS activity tracker for building near-perfect persona
 - Reports collector health, freshness, service state, and today's data-quality audit via `health --json`.
 - Generates CSV exports for spreadsheet workflows.
 - Provides `--json` output for AI/tool callers.
+- Provides `inventory --json` for SwiftUI/AI filter menus across apps, domains, categories, and activity types.
 - Installs as a `launchd` user service for behind-the-scenes collection.
 
 ## Install
@@ -64,6 +65,7 @@ activity_tracker query --from 2026-06-03 --to 2026-06-03 --domain github --json
 activity_tracker query --since 2026-06-03T08:00:00+02:00 --until 2026-06-03T09:00:00+02:00 --json
 activity_tracker query --last-minutes 120 --json
 activity_tracker query --category Development --limit 50 --json
+activity_tracker inventory --last-minutes 240 --limit 20 --json
 activity_tracker logs 2026-06-03 --json
 activity_tracker audit 2026-06-03 --json
 activity_tracker logs 2026-06-03 --domain github --json
@@ -90,6 +92,7 @@ activity_tracker repair-context --last-minutes 120 --dry-run --json
 `day`, `logs`, `query`, `summary`, and `report` include the active open session when it overlaps the query; exports stay based on completed sessions. `--text` searches across app, bundle, title, URL, domain, category, and activity type when agents need a broad recall query.
 Windowed summaries and timelines are clipped to the requested day/range/last-minutes bounds so auto reports do not overcount sessions that started before the report window. Raw session arrays keep original persisted bounds for audit/debug context.
 `timeline --json` returns compact ordered blocks grouped by app/domain/category so agents can write reports without reading every raw session.
+`inventory --json` returns windowed app, domain, category, and activity-type facets with clipped seconds, percentages, session counts, first/last seen timestamps, and latest title/URL context for agents or SwiftUI filter pickers.
 `audit --json` reports log quality for a day: gaps above a configurable threshold, overlaps, invalid rows, missing titles, browser sessions missing URLs, browser blank tabs, suspicious browser title/URL mismatches, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, bounded quality issue samples, and current open-session state. Known browser blank tabs are canonicalized as `about:newtab` for new sessions.
 `health --json` is the cheap service substrate check for agents: launchd state, storage freshness, latest observed activity age, open checkpoint, paths, and today's audit/quality counts and breakdowns.
 `service status --json` reports launchd load/running state and PID without requiring agents to parse `launchctl` text.

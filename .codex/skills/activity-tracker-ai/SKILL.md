@@ -25,14 +25,15 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 12. Use `cargo run -- day YYYY-MM-DD --json` for daily summaries.
 13. Use `cargo run -- logs YYYY-MM-DD --json` for one-day raw sessions.
 14. Narrow `query` or `logs` with `--app`, `--title`, `--url`, `--text`, `--category`, `--domain`, `--activity-type active|idle|untracked`, and `--limit`; use `--text` for broad recall across app, bundle, title, URL, domain, category, and activity type.
-15. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
-16. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
-17. After category rule changes, run `cargo run -- reclassify --dry-run --json`, then rerun without `--dry-run`.
-18. After auditing gaps, run `cargo run -- repair-gaps --dry-run --json`, then rerun without `--dry-run` to insert explicit untracked sessions.
-19. After improving title capture, run `cargo run -- repair-titles --dry-run --json`, then rerun without `--dry-run` to backfill native app titles and browser titles whose exact URL has one unique observed title.
-20. After improving URL normalization, run `cargo run -- repair-urls --dry-run --json`, then rerun without `--dry-run` to canonicalize safe URL-only fixes such as known or surrounded browser blank tabs.
-21. After exposing browser context mismatches or missing browser context, run `cargo run -- repair-context --dry-run --json`, then rerun without `--dry-run` only for high-confidence neighbor or exact-URL repairs.
-22. Prefer scoped repair commands returned by `agent.repair_plan.actionable_commands`; `agent.quality.repair_commands` are candidates and may explain quality warnings that are not safely repairable.
+15. Use `cargo run -- inventory --last-minutes N --limit 20 --json` for app/domain/category/activity-type facets before choosing filters or populating UI picker options.
+16. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
+17. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
+18. After category rule changes, run `cargo run -- reclassify --dry-run --json`, then rerun without `--dry-run`.
+19. After auditing gaps, run `cargo run -- repair-gaps --dry-run --json`, then rerun without `--dry-run` to insert explicit untracked sessions.
+20. After improving title capture, run `cargo run -- repair-titles --dry-run --json`, then rerun without `--dry-run` to backfill native app titles and browser titles whose exact URL has one unique observed title.
+21. After improving URL normalization, run `cargo run -- repair-urls --dry-run --json`, then rerun without `--dry-run` to canonicalize safe URL-only fixes such as known or surrounded browser blank tabs.
+22. After exposing browser context mismatches or missing browser context, run `cargo run -- repair-context --dry-run --json`, then rerun without `--dry-run` only for high-confidence neighbor or exact-URL repairs.
+23. Prefer scoped repair commands returned by `agent.repair_plan.actionable_commands`; `agent.quality.repair_commands` are candidates and may explain quality warnings that are not safely repairable.
 
 ## Operations
 
@@ -46,6 +47,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - CSV import: `cargo run -- import-csv ~/Desktop/usage_stats.csv --json`
 - Broad search: `cargo run -- query --text "driverry devops" --json`
 - URL search: `cargo run -- logs 2026-06-03 --url pull/123 --json`
+- Filter inventory: `cargo run -- inventory --last-minutes 240 --limit 20 --json`
 - Scoped reclassify: `cargo run -- reclassify --from 2026-06-03 --to 2026-06-03 --dry-run --json`
 - Title repair: `cargo run -- repair-titles --dry-run --json`
 - URL repair: `cargo run -- repair-urls --dry-run --json`
@@ -61,6 +63,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Maintain the SQLite `open_session` heartbeat so crash/restart recovery does not lose the active span.
 - Include the provisional open session in live query commands (`day`, `logs`, `query`, `summary`, `report`) when it overlaps the query.
 - Keep windowed summaries and timelines clipped to requested day/range/last-minutes bounds; raw session arrays can retain original persisted start/end for audit/debug context.
+- Keep `inventory --json` window-aware and backed by the same indexed query window; use it for filter menus instead of scanning raw history in callers.
 - Use app identity plus browser URL domains for categories; reclassify stored sessions when mappings change.
 - Keep observed domain mappings current for recurring work tools, communication, AI, writing, research, and development sites.
 - For browsers, collect active tab title and URL from the same AppleScript sample so rows do not mix different tab states.
