@@ -58,6 +58,7 @@ cargo run -- import-csv ~/Desktop/usage_stats.csv --dry-run --json
 cargo run -- reclassify --dry-run --json
 cargo run -- repair-gaps --dry-run --json
 cargo run -- repair-titles --dry-run --json
+cargo run -- repair-urls --dry-run --json
 ```
 
 ## Repo-Local Skill

@@ -65,6 +65,8 @@ enum Command {
     RepairGaps(RepairGapsArgs),
     /// Backfill native app titles when only app-level context is available.
     RepairTitles(RepairTitlesArgs),
+    /// Canonicalize safe URL repairs, such as known browser blank tabs.
+    RepairUrls(RepairUrlsArgs),
     /// Print storage and service paths.
     Paths(OutputArgs),
     /// Print collector health, freshness, service state, and today audit.
@@ -240,6 +242,14 @@ struct RepairTitlesArgs {
     json: bool,
 }
 
+#[derive(Debug, Args)]
+struct RepairUrlsArgs {
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    json: bool,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ExportFormat {
     Csv,
@@ -302,6 +312,7 @@ fn run() -> Result<()> {
         Command::Reclassify(args) => reclassify(&store, args),
         Command::RepairGaps(args) => repair_gaps(&store, args),
         Command::RepairTitles(args) => repair_titles(&store, args),
+        Command::RepairUrls(args) => repair_urls(&store, args),
         Command::Paths(args) => print_paths(&store, args),
         Command::Health(args) => print_health(&store, args),
         Command::Agent(args) => print_agent(&store, args),
@@ -698,6 +709,19 @@ fn repair_titles(store: &LogStore, args: RepairTitlesArgs) -> Result<()> {
         println!("repaired: {}", report.repaired);
         println!("native_repaired: {}", report.native_repaired);
         println!("browser_repaired: {}", report.browser_repaired);
+        println!("dry_run: {}", yes_no(report.dry_run));
+        Ok(())
+    }
+}
+
+fn repair_urls(store: &LogStore, args: RepairUrlsArgs) -> Result<()> {
+    let report = store.repair_urls(args.dry_run)?;
+    if args.json {
+        print_json(&report)
+    } else {
+        println!("scanned: {}", report.scanned);
+        println!("repaired: {}", report.repaired);
+        println!("blank_tab_urls: {}", report.blank_tab_urls);
         println!("dry_run: {}", yes_no(report.dry_run));
         Ok(())
     }

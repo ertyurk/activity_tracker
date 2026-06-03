@@ -351,6 +351,14 @@ pub struct RepairTitlesReport {
     pub dry_run: bool,
 }
 
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct RepairUrlsReport {
+    pub scanned: usize,
+    pub repaired: usize,
+    pub blank_tab_urls: usize,
+    pub dry_run: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionCheckpoint {
     pub start_time: DateTime<Local>,
@@ -929,6 +937,37 @@ impl LogStore {
         Ok(report)
     }
 
+    pub fn repair_urls(&self, dry_run: bool) -> Result<RepairUrlsReport> {
+        self.ensure_dirs()?;
+        let sessions = self.load_sessions_from_db()?;
+        let mut report = RepairUrlsReport {
+            dry_run,
+            ..RepairUrlsReport::default()
+        };
+
+        for session in sessions {
+            report.scanned += 1;
+            let Some(url) = repaired_url_for_session(&session) else {
+                continue;
+            };
+
+            report.repaired += 1;
+            if url == BROWSER_NEW_TAB_URL {
+                report.blank_tab_urls += 1;
+            }
+            if !dry_run {
+                self.update_session_url(&session, &url)?;
+            }
+        }
+
+        if !dry_run && report.repaired > 0 {
+            self.rewrite_jsonl_mirror_from_db()?;
+            self.refresh_default_csv()?;
+        }
+
+        Ok(report)
+    }
+
     pub fn checkpoint_session(
         &self,
         entity: &ActiveEntity,
@@ -1231,6 +1270,32 @@ impl LogStore {
                AND activity_type = ?8",
             params![
                 title,
+                session.start_time.to_rfc3339(),
+                session.end_time.to_rfc3339(),
+                &session.app_name,
+                &session.bundle_id,
+                &session.title,
+                &session.url,
+                session.activity_type.to_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn update_session_url(&self, session: &UsageSession, url: &str) -> Result<()> {
+        let conn = Connection::open(self.db_path())?;
+        conn.execute(
+            "UPDATE sessions
+             SET url = ?1
+             WHERE start_time = ?2
+               AND end_time = ?3
+               AND app_name = ?4
+               AND bundle_id = ?5
+               AND title IS ?6
+               AND url IS ?7
+               AND activity_type = ?8",
+            params![
+                url,
                 session.start_time.to_rfc3339(),
                 session.end_time.to_rfc3339(),
                 &session.app_name,
@@ -1875,7 +1940,13 @@ fn normalize_browser_tab_url(title: Option<&str>, url: Option<String>) -> Option
     if title.is_some_and(is_browser_blank_tab_title) {
         return Some(BROWSER_NEW_TAB_URL.to_string());
     }
-    url
+    url.map(|url| {
+        if is_browser_blank_tab_url(&url) {
+            BROWSER_NEW_TAB_URL.to_string()
+        } else {
+            url
+        }
+    })
 }
 
 #[must_use]
@@ -2325,6 +2396,7 @@ fn app_identity(session: &UsageSession) -> String {
 
 fn session_missing_title(session: &UsageSession) -> bool {
     session.activity_type == ActivityType::Active
+        && !browser_blank_tab(session)
         && session
             .title
             .as_deref()
@@ -2333,16 +2405,29 @@ fn session_missing_title(session: &UsageSession) -> bool {
 
 fn browser_blank_tab(session: &UsageSession) -> bool {
     is_browser(&session.bundle_id)
-        && session
+        && (session
             .title
             .as_deref()
             .is_some_and(is_browser_blank_tab_title)
+            || session.url.as_deref().is_some_and(is_browser_blank_tab_url))
 }
 
 fn is_browser_blank_tab_title(title: &str) -> bool {
     matches!(
         title.trim().to_ascii_lowercase().as_str(),
         "new tab" | "start page"
+    )
+}
+
+fn is_browser_blank_tab_url(url: &str) -> bool {
+    matches!(
+        url.trim().to_ascii_lowercase().as_str(),
+        "about:blank"
+            | "about:newtab"
+            | "about://newtab"
+            | "chrome://newtab/"
+            | "brave://newtab/"
+            | "edge://newtab/"
     )
 }
 
@@ -2353,6 +2438,16 @@ fn browser_missing_url(session: &UsageSession) -> bool {
             .url
             .as_deref()
             .is_none_or(|url| url.trim().is_empty())
+}
+
+fn repaired_url_for_session(session: &UsageSession) -> Option<String> {
+    if session.activity_type != ActivityType::Active || !is_browser(&session.bundle_id) {
+        return None;
+    }
+
+    let url = session.url.as_deref()?;
+    (is_browser_blank_tab_url(url) && url.trim() != BROWSER_NEW_TAB_URL)
+        .then(|| BROWSER_NEW_TAB_URL.to_string())
 }
 
 #[derive(Debug, Clone)]
@@ -3529,6 +3624,52 @@ mod tests {
     }
 
     #[test]
+    fn repair_urls_canonicalizes_browser_blank_tabs_only() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 10, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let mut blank = UsageSession::from_entity(
+            &entity(),
+            start,
+            start + TimeDelta::try_seconds(60).ok_or_else(|| anyhow::anyhow!("missing delta"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing blank"))?;
+        blank.title = None;
+        blank.url = Some("about:blank".to_string());
+        let mut normal = blank.clone();
+        normal.start_time =
+            start + TimeDelta::try_seconds(60).ok_or_else(|| anyhow::anyhow!("missing delta"))?;
+        normal.end_time =
+            start + TimeDelta::try_seconds(120).ok_or_else(|| anyhow::anyhow!("missing delta"))?;
+        normal.title = Some("Example Project".to_string());
+        normal.url = Some("https://example.com/path".to_string());
+
+        store.append_session(&blank)?;
+        store.append_session(&normal)?;
+        let dry_run = store.repair_urls(true)?;
+        let report = store.repair_urls(false)?;
+        let second_report = store.repair_urls(false)?;
+        let sessions = store.load_sessions()?;
+
+        assert_eq!(dry_run.repaired, 1);
+        assert_eq!(dry_run.blank_tab_urls, 1);
+        assert_eq!(report.repaired, 1);
+        assert_eq!(report.blank_tab_urls, 1);
+        assert_eq!(second_report.repaired, 0);
+        assert!(sessions.iter().any(
+            |session| session.url.as_deref() == Some(BROWSER_NEW_TAB_URL)
+                && session.title.is_none()
+        ));
+        assert!(sessions.iter().any(|session| session.url.as_deref()
+            == Some("https://example.com/path")
+            && session.title.as_deref() == Some("Example Project")));
+        Ok(())
+    }
+
+    #[test]
     fn import_csv_dry_run_does_not_write() -> AnyhowResult<()> {
         let dir = tempfile::tempdir()?;
         let store = LogStore::new(dir.path().join("store"));
@@ -3800,12 +3941,41 @@ mod tests {
             Some(BROWSER_NEW_TAB_URL.to_string())
         );
         assert_eq!(
+            normalize_browser_tab_url(None, Some("about:blank".to_string())),
+            Some(BROWSER_NEW_TAB_URL.to_string())
+        );
+        assert_eq!(
             normalize_browser_tab_url(
                 Some("Example Project"),
                 Some("https://www.example.com/path".to_string()),
             ),
             Some("https://www.example.com/path".to_string())
         );
+    }
+
+    #[test]
+    fn browser_blank_tab_url_is_not_missing_title_or_url() -> AnyhowResult<()> {
+        let mut session = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing session"))?;
+        session.title = None;
+        session.url = Some("about:blank".to_string());
+
+        let audit = audit_sessions(&[session], 30.0);
+
+        assert_eq!(audit.missing_title_count, 0);
+        assert_eq!(audit.browser_missing_url_count, 0);
+        assert_eq!(audit.browser_blank_tab_count, 1);
+        Ok(())
     }
 
     #[test]

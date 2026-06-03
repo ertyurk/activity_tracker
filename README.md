@@ -75,6 +75,7 @@ activity_tracker import-csv ~/Desktop/usage_stats.csv --dry-run --json
 activity_tracker reclassify --dry-run --json
 activity_tracker repair-gaps --dry-run --json
 activity_tracker repair-titles --dry-run --json
+activity_tracker repair-urls --dry-run --json
 ```
 
 `agent --json` is the preferred first call for internal AI/reporting tools: it returns service readiness, freshness, warnings, today's audit, bounded summary/timeline context, open checkpoint, and paths. It defaults to the last 120 minutes, top 12 summary rows, and the 20 most recent timeline blocks; pass a date for one day, tune `--summary-limit`/`--timeline-limit`, or add `--include-sessions` when a tool needs raw sessions.
@@ -87,6 +88,7 @@ activity_tracker repair-titles --dry-run --json
 `reclassify` recomputes categories from current app and browser-domain rules, useful after improving category mappings.
 `repair-gaps` converts audited gaps in completed logs into explicit `activity_type: "untracked"` sessions so missing time stays visible instead of disappearing from totals.
 `repair-titles` backfills native-app title gaps with the app name when macOS exposes only app-level context, and repairs browser titles only when the exact URL has one unique observed title elsewhere in the log.
+`repair-urls` canonicalizes safe URL-only fixes such as known browser blank-tab URLs to `about:newtab`.
 
 No subcommand defaults to `track`, preserving the original simple run behavior.
 
