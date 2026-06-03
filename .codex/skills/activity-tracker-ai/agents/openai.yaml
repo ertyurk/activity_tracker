@@ -1,0 +1,4 @@
+interface:
+  display_name: "Activity Tracker AI"
+  short_description: "Query and improve local activity logs."
+  default_prompt: "Use $activity-tracker-ai to query today, inspect local logs, or improve tracker fidelity."
