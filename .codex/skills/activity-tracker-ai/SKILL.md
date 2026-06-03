@@ -18,7 +18,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 5. Use `cargo run -- health --json` before reports when you need the full launchd/storage health payload.
 6. Use `cargo run -- report YYYY-MM-DD --json` for the full daily AI payload: summary, sessions, open checkpoint, and paths.
 7. Use `cargo run -- timeline YYYY-MM-DD --json` for compact ordered blocks grouped by app/domain/category.
-8. Use `cargo run -- audit YYYY-MM-DD --json` to inspect log quality gaps, overlaps, invalid rows, missing titles, browser sessions missing URLs, browser blank tabs, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, bounded quality issue samples, and open checkpoint state.
+8. Use `cargo run -- audit YYYY-MM-DD --json` to inspect log quality gaps, overlaps, invalid rows, missing titles, browser sessions missing URLs, browser blank tabs, suspicious browser title/URL mismatches, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, bounded quality issue samples, and open checkpoint state.
 9. Use `cargo run -- query --from YYYY-MM-DD --to YYYY-MM-DD --json` for cross-day search payloads with summary, compact timeline, sessions, filters, and open checkpoint.
 10. Use `cargo run -- query --since RFC3339 --until RFC3339 --json` for precise report windows, or `cargo run -- query --last-minutes N --json` for rolling auto-report windows.
 11. Omit window args on `query` for all-history search.
@@ -55,6 +55,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Use app identity plus browser URL domains for categories; reclassify stored sessions when mappings change.
 - For browsers, collect active tab title and URL from the same AppleScript sample so rows do not mix different tab states.
 - Stabilize brief same-browser title/URL misses from current tab context only when observed context is missing or matches; never fill across conflicting titles or URLs.
+- Keep suspicious browser title/URL mismatches visible in audit output so agents do not over-trust old mixed-context rows.
 - For native apps, collect app identity and title fallback from the same foreground probe sample: window title first, then app title/name when macOS exposes no window.
 - Use `repair-titles` to backfill native app title gaps and exact-URL browser title gaps after title capture changes; do not mask browser misses with synthetic titles.
 - Use `repair-urls` to canonicalize known or blank-tab-surrounded URLs; do not infer ordinary missing browser URLs from surrounding sessions.

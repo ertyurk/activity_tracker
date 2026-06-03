@@ -601,6 +601,10 @@ fn print_audit(store: &LogStore, args: AuditArgs) -> Result<()> {
         println!("browser_missing_urls: {}", audit.browser_missing_url_count);
         println!("browser_blank_tabs: {}", audit.browser_blank_tab_count);
         println!(
+            "browser_context_mismatches: {}",
+            audit.browser_context_mismatch_count
+        );
+        println!(
             "uncategorized_sessions: {}",
             audit.uncategorized_session_count
         );
@@ -611,6 +615,10 @@ fn print_audit(store: &LogStore, args: AuditArgs) -> Result<()> {
             &audit.browser_missing_url_by_title,
         );
         print_quality_rows("browser_blank_tab_by_app", &audit.browser_blank_tab_by_app);
+        print_quality_rows(
+            "browser_context_mismatch_by_domain",
+            &audit.browser_context_mismatch_by_domain,
+        );
         print_quality_rows("uncategorized_by_app", &audit.uncategorized_by_app);
         println!("total_gap: {}", format_seconds(audit.total_gap_seconds));
         println!("longest_gap: {}", format_seconds(audit.longest_gap_seconds));
@@ -816,6 +824,10 @@ fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
         println!(
             "today_browser_blank_tabs: {}",
             audit.browser_blank_tab_count
+        );
+        println!(
+            "today_browser_context_mismatches: {}",
+            audit.browser_context_mismatch_count
         );
         println!(
             "today_uncategorized_sessions: {}",
@@ -1143,6 +1155,12 @@ fn agent_warnings(
         warnings.push(format!(
             "browser_missing_urls:{}",
             audit.browser_missing_url_count
+        ));
+    }
+    if audit.browser_context_mismatch_count > 0 {
+        warnings.push(format!(
+            "browser_context_mismatches:{}",
+            audit.browser_context_mismatch_count
         ));
     }
     if audit.missing_title_count > 0 {

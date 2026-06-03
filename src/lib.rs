@@ -253,11 +253,13 @@ pub struct ActivityAudit {
     pub browser_session_count: usize,
     pub browser_missing_url_count: usize,
     pub browser_blank_tab_count: usize,
+    pub browser_context_mismatch_count: usize,
     pub uncategorized_session_count: usize,
     pub missing_title_by_app: Vec<AuditQualityRow>,
     pub browser_missing_url_by_app: Vec<AuditQualityRow>,
     pub browser_missing_url_by_title: Vec<AuditQualityRow>,
     pub browser_blank_tab_by_app: Vec<AuditQualityRow>,
+    pub browser_context_mismatch_by_domain: Vec<AuditQualityRow>,
     pub uncategorized_by_app: Vec<AuditQualityRow>,
     pub quality_issues: Vec<AuditQualityIssue>,
     pub total_gap_seconds: f64,
@@ -278,6 +280,7 @@ pub struct AuditQualityRow {
 pub enum AuditQualityIssueKind {
     MissingTitle,
     BrowserMissingUrl,
+    BrowserContextMismatch,
     Uncategorized,
 }
 
@@ -1468,6 +1471,10 @@ pub fn audit_sessions(sessions: &[UsageSession], gap_threshold_seconds: f64) -> 
         .iter()
         .filter(|session| browser_blank_tab(session))
         .count();
+    let browser_context_mismatch_count = sorted
+        .iter()
+        .filter(|session| browser_context_mismatch(session))
+        .count();
     let uncategorized_session_count = sorted
         .iter()
         .filter(|session| session.category == "Uncategorized")
@@ -1502,6 +1509,18 @@ pub fn audit_sessions(sessions: &[UsageSession], gap_threshold_seconds: f64) -> 
             .iter()
             .filter(|session| browser_blank_tab(session))
             .map(app_identity),
+    );
+    let browser_context_mismatch_by_domain = quality_rows(
+        sorted
+            .iter()
+            .filter(|session| browser_context_mismatch(session))
+            .map(|session| {
+                session
+                    .url
+                    .as_deref()
+                    .and_then(domain_from_url)
+                    .unwrap_or_else(|| "<missing domain>".to_string())
+            }),
     );
     let uncategorized_by_app = quality_rows(
         sorted
@@ -1565,11 +1584,13 @@ pub fn audit_sessions(sessions: &[UsageSession], gap_threshold_seconds: f64) -> 
         browser_session_count,
         browser_missing_url_count,
         browser_blank_tab_count,
+        browser_context_mismatch_count,
         uncategorized_session_count,
         missing_title_by_app,
         browser_missing_url_by_app,
         browser_missing_url_by_title,
         browser_blank_tab_by_app,
+        browser_context_mismatch_by_domain,
         uncategorized_by_app,
         quality_issues,
         total_gap_seconds,
@@ -2557,6 +2578,15 @@ fn quality_issue_rows(sessions: &[UsageSession], limit: usize) -> Vec<AuditQuali
         if rows.len() >= limit {
             break;
         }
+        if browser_context_mismatch(session) {
+            rows.push(quality_issue_row(
+                AuditQualityIssueKind::BrowserContextMismatch,
+                session,
+            ));
+        }
+        if rows.len() >= limit {
+            break;
+        }
         if session.category == "Uncategorized" {
             rows.push(quality_issue_row(
                 AuditQualityIssueKind::Uncategorized,
@@ -2605,6 +2635,66 @@ fn browser_blank_tab(session: &UsageSession) -> bool {
             .as_deref()
             .is_some_and(is_browser_blank_tab_title)
             || session.url.as_deref().is_some_and(is_browser_blank_tab_url))
+}
+
+fn browser_context_mismatch(session: &UsageSession) -> bool {
+    if session.activity_type != ActivityType::Active
+        || !is_browser(&session.bundle_id)
+        || browser_blank_tab(session)
+    {
+        return false;
+    }
+    let Some(title) = session.title.as_deref().and_then(non_empty_borrowed) else {
+        return false;
+    };
+    let Some(url_domain) = session.url.as_deref().and_then(domain_from_url) else {
+        return false;
+    };
+    if url_domain == "localhost" {
+        return false;
+    }
+    let Some(title_domain) = browser_title_domain_hint(title) else {
+        return false;
+    };
+
+    !host_matches(&url_domain, title_domain)
+}
+
+fn browser_title_domain_hint(title: &str) -> Option<&'static str> {
+    let normalized = title.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized == "x" || normalized.contains(" on x:") || normalized.ends_with(" / x") {
+        return Some("x.com");
+    }
+    if normalized == "wapp" || normalized.contains("whatsapp") {
+        return Some("web.whatsapp.com");
+    }
+    if normalized == "slack" || normalized.contains(" - slack") {
+        return Some("app.slack.com");
+    }
+    if normalized == "localhost" {
+        return Some("localhost");
+    }
+    if normalized.contains("cloudflare dashboard") {
+        return Some("dash.cloudflare.com");
+    }
+    if normalized.contains("claude") {
+        return Some("claude.ai");
+    }
+    if normalized.contains("chatgpt") {
+        return Some("chatgpt.com");
+    }
+    if normalized.contains("chating with ai") || normalized.contains("chating ai") {
+        return Some("chating.io");
+    }
+    if normalized.starts_with("inbox")
+        && (normalized.contains("gmail") || normalized.contains(" mail"))
+    {
+        return Some("mail.google.com");
+    }
+    None
 }
 
 fn is_browser_blank_tab_title(title: &str) -> bool {
@@ -4224,6 +4314,81 @@ mod tests {
                 .first()
                 .map(|issue| issue.url.as_deref()),
             Some(None)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn audit_sessions_reports_browser_context_mismatches() -> AnyhowResult<()> {
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 9, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let mut mismatch_entity = entity();
+        mismatch_entity.title = Some("Settings - Claude".to_string());
+        mismatch_entity.url = Some("https://app.slack.com/client/TF7GEHYHZ/dms".to_string());
+        let mismatch = UsageSession::from_entity(
+            &mismatch_entity,
+            start,
+            start + chrono::Duration::seconds(10),
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing mismatch session"))?;
+
+        let mut slack_entity = entity();
+        slack_entity.title = Some("Celal Gokce (DM) - Lean Scale - Slack".to_string());
+        slack_entity.url = Some("https://app.slack.com/client/TF7GEHYHZ/dms".to_string());
+        let slack = UsageSession::from_entity(
+            &slack_entity,
+            start + chrono::Duration::seconds(10),
+            start + chrono::Duration::seconds(20),
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing slack session"))?;
+
+        let mut gmail_entity = entity();
+        gmail_entity.title = Some("Inbox (6) - leanscale.com Mail".to_string());
+        gmail_entity.url = Some("https://mail.google.com/mail/u/0/#inbox".to_string());
+        let gmail = UsageSession::from_entity(
+            &gmail_entity,
+            start + chrono::Duration::seconds(20),
+            start + chrono::Duration::seconds(30),
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing gmail session"))?;
+        let mut local_dev_entity = entity();
+        local_dev_entity.title =
+            Some("Chating AI - Everything you need is just a chat away".to_string());
+        local_dev_entity.url = Some("http://localhost:3200/".to_string());
+        let local_dev = UsageSession::from_entity(
+            &local_dev_entity,
+            start + chrono::Duration::seconds(30),
+            start + chrono::Duration::seconds(40),
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing local dev session"))?;
+        let mut x_entity = entity();
+        x_entity.title = Some(
+            "Thariq on X: \"A harness for every task: dynamic workflows in Claude Code\" / X"
+                .to_string(),
+        );
+        x_entity.url = Some("https://x.com/trq212/status/2061907337154367865".to_string());
+        let x_session = UsageSession::from_entity(
+            &x_entity,
+            start + chrono::Duration::seconds(40),
+            start + chrono::Duration::seconds(50),
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing x session"))?;
+
+        let audit = audit_sessions(&[mismatch, slack, gmail, local_dev, x_session], 30.0);
+
+        assert_eq!(audit.browser_context_mismatch_count, 1);
+        assert_eq!(
+            audit
+                .browser_context_mismatch_by_domain
+                .first()
+                .map(|row| (row.name.as_str(), row.count)),
+            Some(("app.slack.com", 1))
+        );
+        assert_eq!(
+            audit.quality_issues.first().map(|issue| issue.kind),
+            Some(AuditQualityIssueKind::BrowserContextMismatch)
         );
         Ok(())
     }
