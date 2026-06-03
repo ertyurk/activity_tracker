@@ -80,7 +80,7 @@ activity_tracker repair-urls --dry-run --json
 activity_tracker repair-context --dry-run --json
 ```
 
-`agent --json` is the preferred first call for internal AI/reporting tools: it returns service readiness, freshness, warnings, today's audit, bounded summary/timeline context, open checkpoint, and paths. It defaults to the last 120 minutes, top 12 summary rows, and the 20 most recent timeline blocks; pass a date for one day, tune `--summary-limit`/`--timeline-limit`, or add `--include-sessions` when a tool needs raw sessions.
+`agent --json` is the preferred first call for internal AI/reporting tools: it returns service readiness, a separate `quality` gate with score/status/repair commands, freshness, warnings, today's audit, bounded summary/timeline context, open checkpoint, and paths. It defaults to the last 120 minutes, top 12 summary rows, and the 20 most recent timeline blocks; pass a date for one day, tune `--summary-limit`/`--timeline-limit`, or add `--include-sessions` when a tool needs raw sessions.
 `report --json` is the preferred full daily payload for AI agents: it includes the day summary, raw sessions, current open-session checkpoint, provisional active session, and storage paths. `query --json` is the preferred cross-day/all-history search payload: it accepts optional `--from`/`--to` local dates, precise RFC3339 `--since`/`--until` timestamps, or `--last-minutes` for auto-report windows, plus the same app/title/category/domain/activity-type filters as `logs`, and returns summary, compact timeline, raw sessions, filters, and open checkpoint.
 `day`, `logs`, `query`, `summary`, and `report` include the active open session when it overlaps the query; exports stay based on completed sessions.
 `timeline --json` returns compact ordered blocks grouped by app/domain/category so agents can write reports without reading every raw session.
@@ -91,7 +91,7 @@ activity_tracker repair-context --dry-run --json
 `repair-gaps` converts audited gaps in completed logs into explicit `activity_type: "untracked"` sessions so missing time stays visible instead of disappearing from totals.
 `repair-titles` backfills native-app title gaps with the app name when macOS exposes only app-level context, and repairs browser titles only when the exact URL has one unique observed title elsewhere in the log.
 `repair-urls` canonicalizes safe URL-only fixes such as known browser blank-tab URLs and missing URLs surrounded by blank-tab samples to `about:newtab`.
-`repair-context` repairs high-confidence browser title/URL mismatches from immediate neighbor evidence or a unique clean exact-URL title observation, then recomputes category.
+`repair-context` repairs high-confidence browser title/URL mismatches and missing browser context from immediate neighbor evidence or a unique clean exact-URL title observation, then recomputes category.
 
 No subcommand defaults to `track`, preserving the original simple run behavior.
 

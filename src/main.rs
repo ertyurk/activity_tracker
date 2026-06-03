@@ -18,6 +18,7 @@ use activity_tracker::{
 };
 use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use serde::Serialize;
 use tracing_subscriber::EnvFilter;
 
 const DEFAULT_AGENT_LAST_MINUTES: u64 = 120;
@@ -902,6 +903,7 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
     let today_audit = audit_sessions(&today_sessions, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS);
     let ready = agent_ready(&service, &storage, &today_audit);
     let warnings = agent_warnings(&service, &storage, &today_audit);
+    let quality = agent_quality(&today_audit);
 
     let (window_mode, window_date, window_last_minutes, window_start, window_end, sessions) =
         if let Some(date_input) = args.date.as_deref() {
@@ -960,6 +962,7 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
         let value = serde_json::json!({
             "generated_at": now,
             "ready": ready,
+            "quality": quality,
             "warnings": warnings,
             "window": {
                 "mode": window_mode,
@@ -999,6 +1002,9 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
         print_json(&value)
     } else {
         println!("ready: {}", yes_no(ready));
+        println!("quality_ready: {}", yes_no(quality.ready));
+        println!("quality_score: {}", quality.score);
+        println!("quality_status: {}", quality.status);
         println!("service_running: {}", yes_no(service.running));
         println!("fresh: {}", yes_no(storage.fresh));
         println!("window: {window_mode}");
@@ -1016,6 +1022,12 @@ fn print_agent(store: &LogStore, args: AgentArgs) -> Result<()> {
             println!("warnings:");
             for warning in warnings {
                 println!("  {warning}");
+            }
+        }
+        if !quality.repair_commands.is_empty() {
+            println!("repair_commands:");
+            for command in quality.repair_commands {
+                println!("  {command}");
             }
         }
         Ok(())
@@ -1147,6 +1159,19 @@ fn print_quality_rows(label: &str, rows: &[activity_tracker::AuditQualityRow]) {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct AgentQuality {
+    ready: bool,
+    coverage_ready: bool,
+    context_ready: bool,
+    status: &'static str,
+    score: u8,
+    issue_count: usize,
+    blocking_issue_count: usize,
+    context_issue_count: usize,
+    repair_commands: Vec<&'static str>,
+}
+
 fn agent_ready(
     service: &activity_tracker::ServiceStatusReport,
     storage: &activity_tracker::StorageHealth,
@@ -1157,6 +1182,63 @@ fn agent_ready(
         && audit.gap_count == 0
         && audit.overlap_count == 0
         && audit.invalid_session_count == 0
+}
+
+fn agent_quality(audit: &activity_tracker::ActivityAudit) -> AgentQuality {
+    let blocking_issue_count = audit.gap_count + audit.overlap_count + audit.invalid_session_count;
+    let context_issue_count = audit.uncategorized_session_count
+        + audit.browser_missing_url_count
+        + audit.browser_context_mismatch_count
+        + audit.missing_title_count;
+    let issue_count = blocking_issue_count + context_issue_count;
+    let coverage_ready = blocking_issue_count == 0;
+    let context_ready = context_issue_count == 0;
+    let status = if !coverage_ready {
+        "needs_coverage_repair"
+    } else if !context_ready {
+        "usable_with_context_warnings"
+    } else {
+        "clean"
+    };
+    let penalty = audit.gap_count * 20
+        + audit.overlap_count * 20
+        + audit.invalid_session_count * 20
+        + audit.uncategorized_session_count * 3
+        + audit.browser_missing_url_count * 5
+        + audit.browser_context_mismatch_count * 5
+        + audit.missing_title_count;
+    let score = 100usize.saturating_sub(penalty.min(100)) as u8;
+    let mut repair_commands = Vec::new();
+    if audit.gap_count > 0 {
+        repair_commands.push("activity_tracker repair-gaps --dry-run --json");
+    }
+    if audit.uncategorized_session_count > 0 {
+        repair_commands.push("activity_tracker reclassify --dry-run --json");
+    }
+    if audit.missing_title_count > 0 {
+        repair_commands.push("activity_tracker repair-titles --dry-run --json");
+    }
+    if audit.browser_missing_url_count > 0 {
+        repair_commands.push("activity_tracker repair-urls --dry-run --json");
+    }
+    if audit.browser_context_mismatch_count > 0
+        || audit.missing_title_count > 0
+        || audit.browser_missing_url_count > 0
+    {
+        repair_commands.push("activity_tracker repair-context --dry-run --json");
+    }
+
+    AgentQuality {
+        ready: coverage_ready && context_ready,
+        coverage_ready,
+        context_ready,
+        status,
+        score,
+        issue_count,
+        blocking_issue_count,
+        context_issue_count,
+        repair_commands,
+    }
 }
 
 fn agent_warnings(
@@ -1326,5 +1408,95 @@ fn idle_seconds_or_none(probe: &MacOsProbe) -> Option<f64> {
             tracing::warn!(error = %error, "idle probe failed");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn audit_with_counts(
+        gaps: usize,
+        overlaps: usize,
+        invalid: usize,
+        missing_titles: usize,
+        missing_urls: usize,
+        mismatches: usize,
+        uncategorized: usize,
+    ) -> ActivityAudit {
+        ActivityAudit {
+            session_count: 10,
+            gap_count: gaps,
+            overlap_count: overlaps,
+            invalid_session_count: invalid,
+            active_session_count: 10,
+            idle_session_count: 0,
+            untracked_session_count: 0,
+            missing_title_count: missing_titles,
+            browser_session_count: 10,
+            browser_missing_url_count: missing_urls,
+            browser_blank_tab_count: 0,
+            browser_context_mismatch_count: mismatches,
+            uncategorized_session_count: uncategorized,
+            missing_title_by_app: Vec::new(),
+            browser_missing_url_by_app: Vec::new(),
+            browser_missing_url_by_title: Vec::new(),
+            browser_blank_tab_by_app: Vec::new(),
+            browser_context_mismatch_by_domain: Vec::new(),
+            uncategorized_by_app: Vec::new(),
+            quality_issues: Vec::new(),
+            total_gap_seconds: 0.0,
+            longest_gap_seconds: 0.0,
+            gaps: Vec::new(),
+            overlaps: Vec::new(),
+            invalid_sessions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn agent_quality_marks_clean_audit_ready() {
+        let quality = agent_quality(&audit_with_counts(0, 0, 0, 0, 0, 0, 0));
+
+        assert!(quality.ready);
+        assert!(quality.coverage_ready);
+        assert!(quality.context_ready);
+        assert_eq!(quality.status, "clean");
+        assert_eq!(quality.score, 100);
+        assert!(quality.repair_commands.is_empty());
+    }
+
+    #[test]
+    fn agent_quality_suggests_context_repairs_without_blocking_coverage() {
+        let quality = agent_quality(&audit_with_counts(0, 0, 0, 3, 2, 1, 0));
+
+        assert!(!quality.ready);
+        assert!(quality.coverage_ready);
+        assert!(!quality.context_ready);
+        assert_eq!(quality.status, "usable_with_context_warnings");
+        assert_eq!(quality.blocking_issue_count, 0);
+        assert_eq!(quality.context_issue_count, 6);
+        assert_eq!(
+            quality.repair_commands,
+            vec![
+                "activity_tracker repair-titles --dry-run --json",
+                "activity_tracker repair-urls --dry-run --json",
+                "activity_tracker repair-context --dry-run --json"
+            ]
+        );
+    }
+
+    #[test]
+    fn agent_quality_suggests_coverage_repairs_for_structural_issues() {
+        let quality = agent_quality(&audit_with_counts(1, 1, 1, 0, 0, 0, 0));
+
+        assert!(!quality.ready);
+        assert!(!quality.coverage_ready);
+        assert!(quality.context_ready);
+        assert_eq!(quality.status, "needs_coverage_repair");
+        assert_eq!(quality.blocking_issue_count, 3);
+        assert_eq!(
+            quality.repair_commands,
+            vec!["activity_tracker repair-gaps --dry-run --json"]
+        );
     }
 }
