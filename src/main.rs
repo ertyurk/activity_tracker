@@ -75,6 +75,8 @@ enum Command {
     RepairUrls(RepairUrlsArgs),
     /// Repair high-confidence browser title/URL mismatches.
     RepairContext(RepairContextArgs),
+    /// Rewrite JSONL mirror and CSV view from SQLite source of truth.
+    RepairMirror(OutputArgs),
     /// Print storage and service paths.
     Paths(OutputArgs),
     /// Print machine-readable CLI/data contract for app and agent harnesses.
@@ -424,6 +426,7 @@ fn run() -> Result<()> {
         Command::RepairTitles(args) => repair_titles(&store, args),
         Command::RepairUrls(args) => repair_urls(&store, args),
         Command::RepairContext(args) => repair_context(&store, args),
+        Command::RepairMirror(args) => repair_mirror(&store, args),
         Command::Paths(args) => print_paths(&store, args),
         Command::Schema(args) => print_schema(&store, args),
         Command::Now(args) => print_now(&store, args),
@@ -1004,6 +1007,20 @@ fn repair_context(store: &LogStore, args: RepairContextArgs) -> Result<()> {
     }
 }
 
+fn repair_mirror(store: &LogStore, args: OutputArgs) -> Result<()> {
+    let report = store.repair_jsonl_mirror()?;
+    if args.json {
+        print_json(&report)
+    } else {
+        println!("repaired: {}", yes_no(report.repaired));
+        println!("sqlite_session_count: {}", report.sqlite_session_count);
+        println!("jsonl_session_count: {}", report.jsonl_session_count);
+        println!("jsonl: {}", report.jsonl_path.display());
+        println!("csv: {}", report.csv_path.display());
+        Ok(())
+    }
+}
+
 fn print_paths(store: &LogStore, args: OutputArgs) -> Result<()> {
     if args.json {
         let value = serde_json::json!({
@@ -1119,6 +1136,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
                 "reclassify",
                 "repair-context",
                 "repair-gaps",
+                "repair-mirror",
                 "repair-titles",
                 "repair-urls",
             ],

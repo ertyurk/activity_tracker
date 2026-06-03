@@ -42,6 +42,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Health check: `cargo run -- doctor --json`
 - Service substrate health: `cargo run -- health --json`
 - Storage verification: `cargo run -- verify --json`
+- Storage mirror repair: `cargo run -- repair-mirror --json`
 - CLI/data contract: `cargo run -- schema --json`
 - Current activity: `cargo run -- now --json`
 - AI/reporting hook: `cargo run -- agent --json`
@@ -69,6 +70,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Persist each completed session immediately to SQLite and mirror it to JSONL; CSV is derived.
 - Configure each SQLite connection with WAL, normal synchronous mode, foreign keys, and busy timeout so background writes and agent reads coexist.
 - Use `verify --json` to check SQLite integrity and JSONL mirror readability/count sync.
+- Use `repair-mirror --json` to rebuild JSONL mirror and CSV view from SQLite if verification reports a broken or out-of-sync mirror.
 - Maintain the SQLite `open_session` heartbeat so crash/restart recovery does not lose the active span.
 - Include the provisional open session in live query commands (`day`, `logs`, `query`, `summary`, `report`) when it overlaps the query.
 - Keep windowed summaries and timelines clipped to requested day/range/last-minutes bounds; raw session arrays can retain original persisted start/end for audit/debug context.
@@ -81,6 +83,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Keep observed domain mappings current for recurring work tools, communication, AI, writing, research, and development sites.
 - For browsers, collect active tab title and URL from the same AppleScript sample so rows do not mix different tab states.
 - Stabilize brief same-browser title/URL misses from current tab context only when observed context is missing or matches; never fill across conflicting titles or URLs.
+- Treat longer browser samples with no tab title and no URL as untracked time after the short tolerance instead of storing active browser rows with empty context.
 - Keep suspicious browser title/URL mismatches visible in audit output so agents do not over-trust old mixed-context rows.
 - Use `repair-context` to fix only high-confidence browser context mismatches and missing browser title/URL fields; do not infer from weak title/domain guesses alone.
 - Keep `reclassify`, `repair-gaps`, `repair-titles`, `repair-urls`, and `repair-context` scoped to the audited window when an agent is fixing a specific report window.

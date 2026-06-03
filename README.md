@@ -11,6 +11,7 @@ In-progress local-first macOS activity tracker for building near-perfect persona
 - Records longer unknown spans as `activity_type: "untracked"` when probing recovers, so missing time stays visible.
 - Captures active browser tab title and URL from the same active-tab AppleScript sample when the browser supports it.
 - Stabilizes brief same-browser title/URL probe misses from current tab context without mixing conflicting tab data.
+- Converts longer browser tab-context outages into `activity_type: "untracked"` instead of low-quality browser rows with empty title/URL.
 - Captures native app window title when macOS reports it, and atomically falls back to the foreground app title/name when window-level title is unavailable.
 - Stores source-of-truth logs in SQLite under `~/.activity_tracker/activity.db`.
 - Configures SQLite connections with WAL, normal synchronous mode, foreign keys, and a busy timeout so CLI reads can coexist with the background writer.
@@ -94,6 +95,7 @@ activity_tracker repair-titles --dry-run --json
 activity_tracker repair-urls --dry-run --json
 activity_tracker repair-context --dry-run --json
 activity_tracker repair-context --last-minutes 120 --dry-run --json
+activity_tracker repair-mirror --json
 ```
 
 `agent --json` is the preferred first call for internal AI/reporting tools: it returns service readiness, a window-scoped `quality` gate with score/status/scoped candidate repair commands, a dry-run `repair_plan` with actionable commands and repairable counts, freshness, warnings, window audit with bounded quality issue samples, today's audit/quality for background context, bounded summary/timeline context, open checkpoint, and paths. It defaults to the last 120 minutes, top 12 summary rows, and the 20 most recent timeline blocks; pass a date for one day, tune `--summary-limit`/`--timeline-limit`, or add `--include-sessions` when a tool needs raw sessions.
@@ -116,6 +118,7 @@ Windowed summaries and timelines are clipped to the requested day/range/last-min
 `repair-titles` backfills native-app title gaps with the app name when macOS exposes only app-level context, and repairs browser titles only when the exact URL has one unique observed title elsewhere in the log.
 `repair-urls` canonicalizes safe URL-only fixes such as known browser blank-tab URLs and missing URLs surrounded by blank-tab samples to `about:newtab`.
 `repair-context` repairs high-confidence browser title/URL mismatches and missing browser context from immediate neighbor evidence or a unique clean exact-URL title observation, then recomputes category.
+`repair-mirror` rewrites the JSONL mirror and CSV view from SQLite, using SQLite as the source of truth when mirror verification fails.
 
 No subcommand defaults to `track`, preserving the original simple run behavior.
 

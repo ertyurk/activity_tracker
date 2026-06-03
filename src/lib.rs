@@ -10,6 +10,7 @@ use std::time::{Duration as StdDuration, Instant};
 
 use chrono::{DateTime, Datelike, Local, LocalResult, NaiveDate, TimeDelta, TimeZone};
 use csv::Writer;
+use fs2::FileExt;
 use rusqlite::{Connection, Row, params};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -483,6 +484,15 @@ pub struct RepairContextReport {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct RepairMirrorReport {
+    pub sqlite_session_count: u64,
+    pub jsonl_session_count: usize,
+    pub csv_path: PathBuf,
+    pub jsonl_path: PathBuf,
+    pub repaired: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SessionCheckpoint {
     pub start_time: DateTime<Local>,
     pub last_seen_at: DateTime<Local>,
@@ -549,19 +559,34 @@ impl BrowserContextStabilizer {
             self.consecutive_misses = 0;
             return None;
         };
+        let observed_context_unavailable = browser_context_unavailable(&observed_entity);
         let Some(current_entity) = current else {
-            self.consecutive_misses = 0;
-            return Some(observed_entity);
+            return self
+                .stabilize_unavailable_or_observed(observed_entity, observed_context_unavailable);
         };
         let Some(stabilized) = stabilized_browser_context(&observed_entity, current_entity) else {
-            self.consecutive_misses = 0;
-            return Some(observed_entity);
+            return self
+                .stabilize_unavailable_or_observed(observed_entity, observed_context_unavailable);
         };
 
         self.consecutive_misses = self.consecutive_misses.saturating_add(1);
         if self.consecutive_misses <= self.max_consecutive_misses {
             Some(stabilized)
         } else {
+            None
+        }
+    }
+
+    fn stabilize_unavailable_or_observed(
+        &mut self,
+        observed_entity: ActiveEntity,
+        context_unavailable: bool,
+    ) -> Option<ActiveEntity> {
+        if context_unavailable {
+            self.consecutive_misses = self.consecutive_misses.saturating_add(1);
+            None
+        } else {
+            self.consecutive_misses = 0;
             Some(observed_entity)
         }
     }
@@ -702,6 +727,10 @@ impl LogStore {
     }
 
     pub fn ensure_dirs(&self) -> Result<()> {
+        self.with_storage_lock(|| self.ensure_dirs_unlocked())
+    }
+
+    fn ensure_dirs_unlocked(&self) -> Result<()> {
         self.ensure_database_ready()?;
         if self.migrate_jsonl_to_db_if_needed()? {
             self.rewrite_jsonl_mirror_from_db()?;
@@ -719,18 +748,38 @@ impl LogStore {
         Ok(())
     }
 
+    fn with_storage_lock<T>(&self, action: impl FnOnce() -> Result<T>) -> Result<T> {
+        fs::create_dir_all(&self.root)?;
+        let lock_path = self.root.join(".storage.lock");
+        let lock = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(lock_path)?;
+        lock.lock_exclusive()?;
+        let result = action();
+        let unlock_result = lock.unlock();
+        match (result, unlock_result) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error.into()),
+        }
+    }
+
     pub fn append_session(&self, session: &UsageSession) -> Result<()> {
         let _inserted = self.append_session_if_new(session)?;
         Ok(())
     }
 
     fn append_session_if_new(&self, session: &UsageSession) -> Result<bool> {
-        self.ensure_dirs()?;
-        let inserted = self.insert_session_db(session)?;
-        if inserted {
-            self.append_session_jsonl(session)?;
-        }
-        Ok(inserted)
+        self.with_storage_lock(|| {
+            self.ensure_dirs_unlocked()?;
+            let inserted = self.insert_session_db(session)?;
+            if inserted {
+                self.append_session_jsonl(session)?;
+            }
+            Ok(inserted)
+        })
     }
 
     pub fn load_sessions(&self) -> Result<Vec<UsageSession>> {
@@ -1013,8 +1062,28 @@ impl LogStore {
     }
 
     pub fn refresh_default_csv(&self) -> Result<()> {
-        let sessions = self.load_sessions()?;
+        self.with_storage_lock(|| self.refresh_default_csv_unlocked())
+    }
+
+    fn refresh_default_csv_unlocked(&self) -> Result<()> {
+        let sessions = self.load_sessions_from_db()?;
         self.write_csv(&self.csv_path(), &sessions)
+    }
+
+    pub fn repair_jsonl_mirror(&self) -> Result<RepairMirrorReport> {
+        self.with_storage_lock(|| {
+            self.ensure_database_ready()?;
+            self.rewrite_jsonl_mirror_from_db()?;
+            self.refresh_default_csv_unlocked()?;
+            let jsonl_session_count = load_jsonl_sessions_from_path(&self.sessions_path())?.len();
+            Ok(RepairMirrorReport {
+                sqlite_session_count: self.db_session_count()?,
+                jsonl_session_count,
+                csv_path: self.csv_path(),
+                jsonl_path: self.sessions_path(),
+                repaired: true,
+            })
+        })
     }
 
     pub fn import_csv(&self, path: &Path, dry_run: bool) -> Result<ImportReport> {
@@ -1065,7 +1134,18 @@ impl LogStore {
         window_end: Option<DateTime<Local>>,
         dry_run: bool,
     ) -> Result<ReclassifyReport> {
-        self.ensure_dirs()?;
+        self.with_storage_lock(|| {
+            self.reclassify_sessions_in_window_unlocked(window_start, window_end, dry_run)
+        })
+    }
+
+    fn reclassify_sessions_in_window_unlocked(
+        &self,
+        window_start: Option<DateTime<Local>>,
+        window_end: Option<DateTime<Local>>,
+        dry_run: bool,
+    ) -> Result<ReclassifyReport> {
+        self.ensure_dirs_unlocked()?;
         let sessions = self.load_sessions_from_db()?;
         let mut report = ReclassifyReport {
             dry_run,
@@ -1090,7 +1170,7 @@ impl LogStore {
 
         if !dry_run && report.changed > 0 {
             self.rewrite_jsonl_mirror_from_db()?;
-            self.refresh_default_csv()?;
+            self.refresh_default_csv_unlocked()?;
         }
 
         Ok(report)
@@ -1144,7 +1224,18 @@ impl LogStore {
         window_end: Option<DateTime<Local>>,
         dry_run: bool,
     ) -> Result<RepairTitlesReport> {
-        self.ensure_dirs()?;
+        self.with_storage_lock(|| {
+            self.repair_titles_in_window_unlocked(window_start, window_end, dry_run)
+        })
+    }
+
+    fn repair_titles_in_window_unlocked(
+        &self,
+        window_start: Option<DateTime<Local>>,
+        window_end: Option<DateTime<Local>>,
+        dry_run: bool,
+    ) -> Result<RepairTitlesReport> {
+        self.ensure_dirs_unlocked()?;
         let sessions = self.load_sessions_from_db()?;
         let browser_titles = unique_browser_titles_by_url(&sessions);
         let mut report = RepairTitlesReport {
@@ -1173,7 +1264,7 @@ impl LogStore {
 
         if !dry_run && report.repaired > 0 {
             self.rewrite_jsonl_mirror_from_db()?;
-            self.refresh_default_csv()?;
+            self.refresh_default_csv_unlocked()?;
         }
 
         Ok(report)
@@ -1189,7 +1280,18 @@ impl LogStore {
         window_end: Option<DateTime<Local>>,
         dry_run: bool,
     ) -> Result<RepairUrlsReport> {
-        self.ensure_dirs()?;
+        self.with_storage_lock(|| {
+            self.repair_urls_in_window_unlocked(window_start, window_end, dry_run)
+        })
+    }
+
+    fn repair_urls_in_window_unlocked(
+        &self,
+        window_start: Option<DateTime<Local>>,
+        window_end: Option<DateTime<Local>>,
+        dry_run: bool,
+    ) -> Result<RepairUrlsReport> {
+        self.ensure_dirs_unlocked()?;
         let sessions = self.load_sessions_from_db()?;
         let mut report = RepairUrlsReport {
             dry_run,
@@ -1219,7 +1321,7 @@ impl LogStore {
 
         if !dry_run && report.repaired > 0 {
             self.rewrite_jsonl_mirror_from_db()?;
-            self.refresh_default_csv()?;
+            self.refresh_default_csv_unlocked()?;
         }
 
         Ok(report)
@@ -1235,7 +1337,18 @@ impl LogStore {
         window_end: Option<DateTime<Local>>,
         dry_run: bool,
     ) -> Result<RepairContextReport> {
-        self.ensure_dirs()?;
+        self.with_storage_lock(|| {
+            self.repair_context_in_window_unlocked(window_start, window_end, dry_run)
+        })
+    }
+
+    fn repair_context_in_window_unlocked(
+        &self,
+        window_start: Option<DateTime<Local>>,
+        window_end: Option<DateTime<Local>>,
+        dry_run: bool,
+    ) -> Result<RepairContextReport> {
+        self.ensure_dirs_unlocked()?;
         let sessions = self.load_sessions_from_db()?;
         let url_titles = unique_clean_browser_titles_by_url(&sessions);
         let mut report = RepairContextReport {
@@ -1297,7 +1410,7 @@ impl LogStore {
 
         if !dry_run && report.repaired > 0 {
             self.rewrite_jsonl_mirror_from_db()?;
-            self.refresh_default_csv()?;
+            self.refresh_default_csv_unlocked()?;
         }
 
         Ok(report)
@@ -1715,16 +1828,17 @@ impl LogStore {
 
     fn rewrite_jsonl_mirror_from_db(&self) -> Result<()> {
         let sessions = self.load_sessions_from_db()?;
-        if sessions.is_empty() {
-            return Ok(());
-        }
-
-        let mut file = File::create(self.sessions_path())?;
+        let mirror_path = self.sessions_path();
+        let tmp_path = self.root.join("sessions.jsonl.tmp");
+        let mut file = File::create(&tmp_path)?;
         for session in sessions {
             serde_json::to_writer(&mut file, &session)?;
             file.write_all(b"\n")?;
         }
         file.flush()?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(tmp_path, mirror_path)?;
         Ok(())
     }
 
@@ -2290,6 +2404,7 @@ pub fn category_for(bundle_id: &str, name: &str) -> String {
         "com.figma.Desktop" | "com.bohemiancoding.sketch3" | "dev.pencil.desktop" => "Design",
         "com.microsoft.teams2"
         | "net.whatsapp.WhatsApp"
+        | "ru.keepcoder.Telegram"
         | "com.tinyspeck.slackmacgap"
         | "com.apple.MobileSMS"
         | "us.zoom.xos" => "Communication",
@@ -2588,6 +2703,18 @@ fn browser_context_complete(entity: &ActiveEntity) -> bool {
             .and_then(non_empty_borrowed)
             .is_some()
             && entity.url.as_deref().and_then(non_empty_borrowed).is_some())
+}
+
+fn browser_context_unavailable(entity: &ActiveEntity) -> bool {
+    entity.activity_type == ActivityType::Active
+        && is_browser(&entity.bundle_id)
+        && !browser_entity_blank_tab(entity)
+        && entity
+            .title
+            .as_deref()
+            .and_then(non_empty_borrowed)
+            .is_none()
+        && entity.url.as_deref().and_then(non_empty_borrowed).is_none()
 }
 
 fn browser_entity_blank_tab(entity: &ActiveEntity) -> bool {
@@ -4536,6 +4663,38 @@ mod tests {
     }
 
     #[test]
+    fn repair_jsonl_mirror_recovers_from_corrupt_mirror() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let end = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing end"))?;
+        let session = UsageSession::from_entity(&entity(), start, end)
+            .ok_or_else(|| anyhow::anyhow!("missing session"))?;
+
+        store.append_session(&session)?;
+        fs::write(store.sessions_path(), "broken\n")?;
+        let broken = store.verify_storage()?;
+        assert!(!broken.ok);
+        assert!(!broken.jsonl_readable);
+
+        let repair = store.repair_jsonl_mirror()?;
+        let verified = store.verify_storage()?;
+
+        assert!(repair.repaired);
+        assert_eq!(repair.sqlite_session_count, 1);
+        assert_eq!(repair.jsonl_session_count, 1);
+        assert!(verified.ok);
+        assert!(verified.mirror_in_sync);
+        Ok(())
+    }
+
+    #[test]
     fn ensure_dirs_backfills_missing_jsonl_mirror_from_db() -> AnyhowResult<()> {
         let dir = tempfile::tempdir()?;
         let store = LogStore::new(dir.path().to_path_buf());
@@ -6347,6 +6506,10 @@ mod tests {
             "Communication"
         );
         assert_eq!(
+            category_for("ru.keepcoder.Telegram", "Telegram"),
+            "Communication"
+        );
+        assert_eq!(
             category_for("com.electron.wispr-flow", "Wispr Flow"),
             "Productivity"
         );
@@ -6512,10 +6675,18 @@ mod tests {
                 .as_ref(),
             Some(&current)
         );
-        assert_eq!(
-            stabilizer.stabilize(Some(missing.clone()), Some(&current)),
-            Some(missing)
-        );
+        assert_eq!(stabilizer.stabilize(Some(missing), Some(&current)), None);
+    }
+
+    #[test]
+    fn browser_context_stabilizer_drops_startup_context_miss() {
+        let mut stabilizer = BrowserContextStabilizer::new(2);
+        let mut missing = entity();
+        missing.title = None;
+        missing.url = None;
+        missing.category = "Browser".to_string();
+
+        assert_eq!(stabilizer.stabilize(Some(missing), None), None);
     }
 
     #[test]

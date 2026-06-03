@@ -15,6 +15,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - Keep observed browser-domain mappings current for recurring work tools, communication, AI, writing, research, and development domains.
 - Browser title and URL should come from one active-tab probe sample so log rows do not mix context from different tabs.
 - Brief browser title/URL probe misses may reuse current tab context only when same browser app and no conflicting title/URL evidence exists.
+- Browser samples with no tab title and no URL beyond the short miss tolerance should become unknown/untracked time, not active browser rows with empty context.
 - Preserve `activity_type` and treat idle as first-class log data, not as foreground app time.
 - Preserve audited gaps as explicit `activity_type: "untracked"` sessions when repairing coverage.
 - Preserve longer unknown/probe-unavailable spans as `activity_type: "untracked"` when the collector recovers.
@@ -30,6 +31,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - `schema --json` should expose CLI/data-contract capabilities for SwiftUI and tool harness setup.
 - `now --json` should remain a cheap current-activity poll for SwiftUI/menu-bar clients.
 - `verify --json` should prove SQLite integrity and JSONL mirror readability/count sync.
+- `repair-mirror --json` should rebuild JSONL mirror and CSV view from SQLite source of truth when verification fails.
 - Keep window-scoped quality issue samples in `agent --json`; compact today-wide audit samples to keep payload bounded.
 - Keep `agent` repair commands scoped to the same audited window, and keep `reclassify`/repair commands window-aware so agents do not mutate all history for a narrow report.
 - Use `agent.repair_plan.actionable_commands` for automated fixes; `agent.quality.repair_commands` are candidates and may explain non-repairable quality warnings.
@@ -93,6 +95,7 @@ cargo run -- repair-titles --dry-run --json
 cargo run -- repair-urls --dry-run --json
 cargo run -- repair-context --dry-run --json
 cargo run -- repair-context --last-minutes 120 --dry-run --json
+cargo run -- repair-mirror --json
 ```
 
 ## Repo-Local Skill
