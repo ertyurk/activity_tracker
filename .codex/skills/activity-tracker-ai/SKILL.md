@@ -15,7 +15,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 2. Use `cargo run -- health --json` before reports to verify launchd state, storage freshness, open checkpoint, paths, and today's audit counts.
 3. Use `cargo run -- report YYYY-MM-DD --json` for the one-call AI payload: summary, sessions, open checkpoint, and paths.
 4. Use `cargo run -- timeline YYYY-MM-DD --json` for compact ordered blocks grouped by app/domain/category.
-5. Use `cargo run -- audit YYYY-MM-DD --json` to inspect log quality gaps, overlaps, invalid rows, missing titles, browser sessions missing URLs, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, and open checkpoint state.
+5. Use `cargo run -- audit YYYY-MM-DD --json` to inspect log quality gaps, overlaps, invalid rows, missing titles, browser sessions missing URLs, browser blank tabs, untracked/idle counts, uncategorized counts, by-app/by-title quality breakdowns, and open checkpoint state.
 6. Use `cargo run -- query --from YYYY-MM-DD --to YYYY-MM-DD --json` for cross-day search payloads with summary, compact timeline, sessions, filters, and open checkpoint.
 7. Use `cargo run -- query --since RFC3339 --until RFC3339 --json` for precise report windows, or `cargo run -- query --last-minutes N --json` for rolling auto-report windows.
 8. Omit window args on `query` for all-history search.
@@ -46,6 +46,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Include the provisional open session in live query commands (`day`, `logs`, `query`, `summary`, `report`) when it overlaps the query.
 - Use app identity plus browser URL domains for categories; reclassify stored sessions when mappings change.
 - Preserve current session through short active-app probe misses; only create gaps after repeated misses.
+- Canonicalize known browser blank tabs as `about:newtab` and keep them separate from actionable missing-URL audit rows.
 - Record idle as `activity_type: "idle"` with `bundle_id: "local.activity_tracker.idle"` once HID idle time crosses threshold.
 - Record longer unknown/probe-unavailable spans as `activity_type: "untracked"` when probing recovers.
 - Repair real gaps as `activity_type: "untracked"` with `bundle_id: "local.activity_tracker.untracked"` rather than hiding missing time.

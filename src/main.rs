@@ -551,6 +551,7 @@ fn print_audit(store: &LogStore, args: AuditArgs) -> Result<()> {
         println!("invalid_sessions: {}", audit.invalid_session_count);
         println!("missing_titles: {}", audit.missing_title_count);
         println!("browser_missing_urls: {}", audit.browser_missing_url_count);
+        println!("browser_blank_tabs: {}", audit.browser_blank_tab_count);
         println!(
             "uncategorized_sessions: {}",
             audit.uncategorized_session_count
@@ -561,6 +562,7 @@ fn print_audit(store: &LogStore, args: AuditArgs) -> Result<()> {
             "browser_missing_url_by_title",
             &audit.browser_missing_url_by_title,
         );
+        print_quality_rows("browser_blank_tab_by_app", &audit.browser_blank_tab_by_app);
         print_quality_rows("uncategorized_by_app", &audit.uncategorized_by_app);
         println!("total_gap: {}", format_seconds(audit.total_gap_seconds));
         println!("longest_gap: {}", format_seconds(audit.longest_gap_seconds));
@@ -735,6 +737,10 @@ fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
             audit.browser_missing_url_count
         );
         println!(
+            "today_browser_blank_tabs: {}",
+            audit.browser_blank_tab_count
+        );
+        println!(
             "today_uncategorized_sessions: {}",
             audit.uncategorized_session_count
         );
@@ -746,6 +752,10 @@ fn print_health(store: &LogStore, args: HealthArgs) -> Result<()> {
         print_quality_rows(
             "today_browser_missing_url_by_title",
             &audit.browser_missing_url_by_title,
+        );
+        print_quality_rows(
+            "today_browser_blank_tab_by_app",
+            &audit.browser_blank_tab_by_app,
         );
         print_quality_rows("today_uncategorized_by_app", &audit.uncategorized_by_app);
         Ok(())

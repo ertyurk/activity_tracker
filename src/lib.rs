@@ -251,10 +251,12 @@ pub struct ActivityAudit {
     pub missing_title_count: usize,
     pub browser_session_count: usize,
     pub browser_missing_url_count: usize,
+    pub browser_blank_tab_count: usize,
     pub uncategorized_session_count: usize,
     pub missing_title_by_app: Vec<AuditQualityRow>,
     pub browser_missing_url_by_app: Vec<AuditQualityRow>,
     pub browser_missing_url_by_title: Vec<AuditQualityRow>,
+    pub browser_blank_tab_by_app: Vec<AuditQualityRow>,
     pub uncategorized_by_app: Vec<AuditQualityRow>,
     pub total_gap_seconds: f64,
     pub longest_gap_seconds: f64,
@@ -1258,6 +1260,10 @@ pub fn audit_sessions(sessions: &[UsageSession], gap_threshold_seconds: f64) -> 
         .iter()
         .filter(|session| browser_missing_url(session))
         .count();
+    let browser_blank_tab_count = sorted
+        .iter()
+        .filter(|session| browser_blank_tab(session))
+        .count();
     let uncategorized_session_count = sorted
         .iter()
         .filter(|session| session.category == "Uncategorized")
@@ -1286,6 +1292,12 @@ pub fn audit_sessions(sessions: &[UsageSession], gap_threshold_seconds: f64) -> 
                     .unwrap_or("<missing title>")
                     .to_string()
             }),
+    );
+    let browser_blank_tab_by_app = quality_rows(
+        sorted
+            .iter()
+            .filter(|session| browser_blank_tab(session))
+            .map(app_identity),
     );
     let uncategorized_by_app = quality_rows(
         sorted
@@ -1347,10 +1359,12 @@ pub fn audit_sessions(sessions: &[UsageSession], gap_threshold_seconds: f64) -> 
         missing_title_count,
         browser_session_count,
         browser_missing_url_count,
+        browser_blank_tab_count,
         uncategorized_session_count,
         missing_title_by_app,
         browser_missing_url_by_app,
         browser_missing_url_by_title,
+        browser_blank_tab_by_app,
         uncategorized_by_app,
         total_gap_seconds,
         longest_gap_seconds,
@@ -1736,16 +1750,19 @@ pub trait ActivityProbe {
 #[derive(Debug, Default)]
 pub struct MacOsProbe;
 
+pub const BROWSER_NEW_TAB_URL: &str = "about:newtab";
+
 impl ActivityProbe for MacOsProbe {
     fn active_entity(&self) -> Result<Option<ActiveEntity>> {
         let Some((bundle_id, name)) = active_app_info()? else {
             return Ok(None);
         };
-        let url = browser_tab_url(&bundle_id);
-        let title = if is_browser(&bundle_id) {
-            browser_tab_title(&bundle_id)
+        let (title, url) = if is_browser(&bundle_id) {
+            let title = browser_tab_title(&bundle_id);
+            let url = normalize_browser_tab_url(title.as_deref(), browser_tab_url(&bundle_id));
+            (title, url)
         } else {
-            active_window_title()
+            (active_window_title(), None)
         };
         let category = category_for_activity(&bundle_id, &name, url.as_deref());
         Ok(Some(ActiveEntity {
@@ -1761,6 +1778,13 @@ impl ActivityProbe for MacOsProbe {
     fn idle_seconds(&self) -> Result<Option<f64>> {
         hid_idle_seconds()
     }
+}
+
+fn normalize_browser_tab_url(title: Option<&str>, url: Option<String>) -> Option<String> {
+    if title.is_some_and(is_browser_blank_tab_title) {
+        return Some(BROWSER_NEW_TAB_URL.to_string());
+    }
+    url
 }
 
 #[must_use]
@@ -1883,10 +1907,23 @@ pub fn active_window_title() -> Option<String> {
     let script = r#"tell application "System Events"
 set frontApp to first application process whose frontmost is true
 try
-  return name of window 1 of frontApp
+  set frontWindow to window 1 of frontApp
 on error
   return ""
 end try
+try
+  set windowName to name of frontWindow
+  if windowName is not missing value and windowName is not "" then return windowName
+end try
+try
+  set axTitle to value of attribute "AXTitle" of frontWindow
+  if axTitle is not missing value and axTitle is not "" then return axTitle
+end try
+try
+  set axDocument to value of attribute "AXDocument" of frontWindow
+  if axDocument is not missing value and axDocument is not "" then return axDocument
+end try
+return ""
 end tell"#;
 
     match run_osascript(script) {
@@ -2141,8 +2178,24 @@ fn session_missing_title(session: &UsageSession) -> bool {
             .is_none_or(|title| title.trim().is_empty())
 }
 
+fn browser_blank_tab(session: &UsageSession) -> bool {
+    is_browser(&session.bundle_id)
+        && session
+            .title
+            .as_deref()
+            .is_some_and(is_browser_blank_tab_title)
+}
+
+fn is_browser_blank_tab_title(title: &str) -> bool {
+    matches!(
+        title.trim().to_ascii_lowercase().as_str(),
+        "new tab" | "start page"
+    )
+}
+
 fn browser_missing_url(session: &UsageSession) -> bool {
     is_browser(&session.bundle_id)
+        && !browser_blank_tab(session)
         && session
             .url
             .as_deref()
@@ -3272,15 +3325,33 @@ mod tests {
                 .ok_or_else(|| anyhow::anyhow!("missing untracked end"))?,
         )
         .ok_or_else(|| anyhow::anyhow!("missing untracked session"))?;
+        let mut browser_blank_tab = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 3, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing blank tab start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 4, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing blank tab end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing blank tab session"))?;
+        browser_blank_tab.title = Some("New Tab".to_string());
+        browser_blank_tab.url = None;
 
-        let audit = audit_sessions(&[browser_missing_context, idle, untracked], 30.0);
+        let audit = audit_sessions(
+            &[browser_missing_context, idle, untracked, browser_blank_tab],
+            30.0,
+        );
 
-        assert_eq!(audit.active_session_count, 1);
+        assert_eq!(audit.active_session_count, 2);
         assert_eq!(audit.idle_session_count, 1);
         assert_eq!(audit.untracked_session_count, 1);
         assert_eq!(audit.missing_title_count, 1);
-        assert_eq!(audit.browser_session_count, 1);
+        assert_eq!(audit.browser_session_count, 2);
         assert_eq!(audit.browser_missing_url_count, 1);
+        assert_eq!(audit.browser_blank_tab_count, 1);
         assert_eq!(audit.uncategorized_session_count, 1);
         assert_eq!(
             audit
@@ -3298,12 +3369,34 @@ mod tests {
         );
         assert_eq!(
             audit
+                .browser_blank_tab_by_app
+                .first()
+                .map(|row| (row.name.as_str(), row.count)),
+            Some(("Google Chrome (com.google.Chrome)", 1))
+        );
+        assert_eq!(
+            audit
                 .uncategorized_by_app
                 .first()
                 .map(|row| (row.name.as_str(), row.count)),
             Some(("Google Chrome (com.google.Chrome)", 1))
         );
         Ok(())
+    }
+
+    #[test]
+    fn browser_new_tab_url_is_canonicalized() {
+        assert_eq!(
+            normalize_browser_tab_url(Some("New Tab"), Some("https://x.com/home".to_string())),
+            Some(BROWSER_NEW_TAB_URL.to_string())
+        );
+        assert_eq!(
+            normalize_browser_tab_url(
+                Some("Example Project"),
+                Some("https://www.example.com/path".to_string()),
+            ),
+            Some("https://www.example.com/path".to_string())
+        );
     }
 
     #[test]
