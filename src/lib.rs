@@ -18,6 +18,7 @@ pub const DEFAULT_INTERVAL_SECONDS: u64 = 2;
 pub const DEFAULT_IDLE_THRESHOLD_SECONDS: u64 = 300;
 pub const DEFAULT_PROBE_MISS_TOLERANCE: u8 = 3;
 pub const DEFAULT_RECENT_CHECKPOINT_SECONDS: u64 = 30;
+pub const DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS: f64 = 30.0;
 pub const SERVICE_LABEL: &str = "com.local.activity-tracker";
 pub const IDLE_BUNDLE_ID: &str = "local.activity_tracker.idle";
 
@@ -186,6 +187,46 @@ pub struct ActivitySummary {
     pub by_category: Vec<SummaryRow>,
     pub by_app: Vec<SummaryRow>,
     pub by_domain: Vec<SummaryRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ActivityAudit {
+    pub session_count: usize,
+    pub gap_count: usize,
+    pub overlap_count: usize,
+    pub invalid_session_count: usize,
+    pub total_gap_seconds: f64,
+    pub longest_gap_seconds: f64,
+    pub gaps: Vec<AuditGap>,
+    pub overlaps: Vec<AuditOverlap>,
+    pub invalid_sessions: Vec<AuditInvalidSession>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditGap {
+    pub start_time: DateTime<Local>,
+    pub end_time: DateTime<Local>,
+    pub duration_seconds: f64,
+    pub previous_app: String,
+    pub next_app: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditOverlap {
+    pub start_time: DateTime<Local>,
+    pub end_time: DateTime<Local>,
+    pub duration_seconds: f64,
+    pub first_app: String,
+    pub second_app: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditInvalidSession {
+    pub start_time: DateTime<Local>,
+    pub end_time: DateTime<Local>,
+    pub duration_seconds: f64,
+    pub app_name: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -816,6 +857,73 @@ pub fn summarize_day(sessions: &[UsageSession], date: NaiveDate) -> Result<Activ
 }
 
 #[must_use]
+pub fn audit_sessions(sessions: &[UsageSession], gap_threshold_seconds: f64) -> ActivityAudit {
+    let mut sorted = sessions.to_vec();
+    sorted.sort_by_key(|session| (session.start_time, session.end_time));
+
+    let mut gaps = Vec::new();
+    let mut overlaps = Vec::new();
+    let invalid_sessions = sorted
+        .iter()
+        .filter_map(invalid_session)
+        .collect::<Vec<_>>();
+    let gap_threshold_seconds = gap_threshold_seconds.max(0.0);
+
+    for pair in sorted.windows(2) {
+        let Some(previous) = pair.first() else {
+            continue;
+        };
+        let Some(next) = pair.get(1) else {
+            continue;
+        };
+
+        if let Some(duration_seconds) = seconds_between(previous.end_time, next.start_time)
+            && duration_seconds >= gap_threshold_seconds
+        {
+            gaps.push(AuditGap {
+                start_time: previous.end_time,
+                end_time: next.start_time,
+                duration_seconds,
+                previous_app: previous.app_name.clone(),
+                next_app: next.app_name.clone(),
+            });
+            continue;
+        }
+
+        if next.start_time < previous.end_time {
+            let overlap_end = min_datetime(previous.end_time, next.end_time);
+            if let Some(duration_seconds) = seconds_between(next.start_time, overlap_end) {
+                overlaps.push(AuditOverlap {
+                    start_time: next.start_time,
+                    end_time: overlap_end,
+                    duration_seconds,
+                    first_app: previous.app_name.clone(),
+                    second_app: next.app_name.clone(),
+                });
+            }
+        }
+    }
+
+    let total_gap_seconds = gaps.iter().map(|gap| gap.duration_seconds).sum();
+    let longest_gap_seconds = gaps
+        .iter()
+        .map(|gap| gap.duration_seconds)
+        .fold(0.0, f64::max);
+
+    ActivityAudit {
+        session_count: sessions.len(),
+        gap_count: gaps.len(),
+        overlap_count: overlaps.len(),
+        invalid_session_count: invalid_sessions.len(),
+        total_gap_seconds,
+        longest_gap_seconds,
+        gaps,
+        overlaps,
+        invalid_sessions,
+    }
+}
+
+#[must_use]
 pub fn filter_sessions(
     sessions: Vec<UsageSession>,
     app: Option<&str>,
@@ -1347,6 +1455,34 @@ fn idle_start(
 
 fn max_datetime(a: DateTime<Local>, b: DateTime<Local>) -> DateTime<Local> {
     if a >= b { a } else { b }
+}
+
+fn min_datetime(a: DateTime<Local>, b: DateTime<Local>) -> DateTime<Local> {
+    if a <= b { a } else { b }
+}
+
+fn invalid_session(session: &UsageSession) -> Option<AuditInvalidSession> {
+    if session.end_time <= session.start_time {
+        return Some(AuditInvalidSession {
+            start_time: session.start_time,
+            end_time: session.end_time,
+            duration_seconds: session.duration_seconds,
+            app_name: session.app_name.clone(),
+            reason: "end_time_not_after_start_time".to_string(),
+        });
+    }
+
+    if session.duration_seconds <= 0.0 {
+        return Some(AuditInvalidSession {
+            start_time: session.start_time,
+            end_time: session.end_time,
+            duration_seconds: session.duration_seconds,
+            app_name: session.app_name.clone(),
+            reason: "non_positive_duration".to_string(),
+        });
+    }
+
+    None
 }
 
 fn local_midnight(date: NaiveDate) -> Result<DateTime<Local>> {
@@ -1995,6 +2131,105 @@ mod tests {
 
         assert_eq!(summary.total_seconds, 60.0);
         assert_eq!(summary.by_activity_type.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn audit_sessions_reports_gaps_above_threshold() -> AnyhowResult<()> {
+        let first = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing first start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing first end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing first"))?;
+        let second = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 3, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing second start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 4, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing second end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing second"))?;
+
+        let audit = audit_sessions(&[first, second], 30.0);
+
+        assert_eq!(audit.gap_count, 1);
+        assert_eq!(audit.total_gap_seconds, 120.0);
+        assert_eq!(audit.longest_gap_seconds, 120.0);
+        assert_eq!(audit.overlap_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn audit_sessions_reports_overlaps_and_invalid_rows() -> AnyhowResult<()> {
+        let first = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing first start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 5, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing first end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing first"))?;
+        let second = UsageSession::from_entity(
+            &entity(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 4, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing second start"))?,
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 8, 6, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing second end"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing second"))?;
+        let invalid_start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 7, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing invalid start"))?;
+        let invalid = UsageSession {
+            start_time: invalid_start,
+            end_time: invalid_start,
+            duration_seconds: 0.0,
+            app_name: "Broken".to_string(),
+            bundle_id: "broken".to_string(),
+            title: None,
+            category: "Uncategorized".to_string(),
+            url: None,
+            activity_type: ActivityType::Active,
+        };
+
+        let audit = audit_sessions(&[first, second, invalid], 30.0);
+
+        assert_eq!(audit.overlap_count, 1);
+        assert_eq!(
+            audit
+                .overlaps
+                .first()
+                .map(|overlap| overlap.duration_seconds),
+            Some(60.0)
+        );
+        assert_eq!(audit.invalid_session_count, 1);
+        assert_eq!(
+            audit
+                .invalid_sessions
+                .first()
+                .map(|row| row.reason.as_str()),
+            Some("end_time_not_after_start_time")
+        );
         Ok(())
     }
 

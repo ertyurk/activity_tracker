@@ -7,11 +7,12 @@ use std::thread;
 use std::time::Duration;
 
 use activity_tracker::{
-    ActivityProbe, DEFAULT_IDLE_THRESHOLD_SECONDS, DEFAULT_INTERVAL_SECONDS,
-    DEFAULT_PROBE_MISS_TOLERANCE, DEFAULT_RECENT_CHECKPOINT_SECONDS, LogStore, MacOsProbe,
-    ProbeMissStabilizer, Result, TrackerError, TrackerState, UsageSession, day_bounds,
-    filter_sessions, format_seconds, install_launch_agent, legacy_data_dir, legacy_sessions_path,
-    parse_date, service_status, summarize_all, summarize_day, uninstall_launch_agent,
+    ActivityProbe, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS, DEFAULT_IDLE_THRESHOLD_SECONDS,
+    DEFAULT_INTERVAL_SECONDS, DEFAULT_PROBE_MISS_TOLERANCE, DEFAULT_RECENT_CHECKPOINT_SECONDS,
+    LogStore, MacOsProbe, ProbeMissStabilizer, Result, TrackerError, TrackerState, UsageSession,
+    audit_sessions, day_bounds, filter_sessions, format_seconds, install_launch_agent,
+    legacy_data_dir, legacy_sessions_path, parse_date, service_status, summarize_all,
+    summarize_day, uninstall_launch_agent,
 };
 use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -41,6 +42,8 @@ enum Command {
     Report(ReportArgs),
     /// Print raw sessions. Defaults to today.
     Logs(LogsArgs),
+    /// Audit one-day log quality for gaps, overlaps, and invalid rows.
+    Audit(AuditArgs),
     /// Print all-time summary.
     Summary(OutputArgs),
     /// Export sessions to CSV or JSONL.
@@ -94,6 +97,15 @@ struct LogsArgs {
     activity_type: Option<String>,
     #[arg(long)]
     limit: Option<usize>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AuditArgs {
+    date: Option<String>,
+    #[arg(long, default_value_t = DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS)]
+    gap_threshold_seconds: f64,
     #[arg(long)]
     json: bool,
 }
@@ -176,6 +188,7 @@ fn run() -> Result<()> {
         Command::Day(args) => print_day(&store, args),
         Command::Report(args) => print_report(&store, args),
         Command::Logs(args) => print_logs(&store, args),
+        Command::Audit(args) => print_audit(&store, args),
         Command::Summary(args) => print_summary(&store, args),
         Command::Export(args) => export_sessions(&store, args),
         Command::ImportCsv(args) => import_csv(&store, args),
@@ -342,6 +355,35 @@ fn print_logs(store: &LogStore, args: LogsArgs) -> Result<()> {
         print_json(&sessions)
     } else {
         print_session_rows(&sessions);
+        Ok(())
+    }
+}
+
+fn print_audit(store: &LogStore, args: AuditArgs) -> Result<()> {
+    let date = date_or_today(args.date.as_deref())?;
+    let now = Local::now();
+    let sessions =
+        store.sessions_for_day_with_open(date, now, DEFAULT_RECENT_CHECKPOINT_SECONDS)?;
+    let audit = audit_sessions(&sessions, args.gap_threshold_seconds);
+    let summary = summarize_day(&sessions, date)?;
+    if args.json {
+        let value = serde_json::json!({
+            "date": date,
+            "generated_at": now,
+            "gap_threshold_seconds": args.gap_threshold_seconds.max(0.0),
+            "summary": summary,
+            "audit": audit,
+            "open_session": store.open_session_checkpoint()?,
+        });
+        print_json(&value)
+    } else {
+        println!("date: {date}");
+        println!("sessions: {}", audit.session_count);
+        println!("gaps: {}", audit.gap_count);
+        println!("overlaps: {}", audit.overlap_count);
+        println!("invalid_sessions: {}", audit.invalid_session_count);
+        println!("total_gap: {}", format_seconds(audit.total_gap_seconds));
+        println!("longest_gap: {}", format_seconds(audit.longest_gap_seconds));
         Ok(())
     }
 }

@@ -13,11 +13,12 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 
 1. Run `cargo run -- paths --json` to discover storage paths.
 2. Use `cargo run -- report YYYY-MM-DD --json` for the one-call AI payload: summary, sessions, open checkpoint, and paths.
-3. Use `cargo run -- day YYYY-MM-DD --json` for daily summaries.
-4. Use `cargo run -- logs YYYY-MM-DD --json` for raw sessions.
-5. Narrow logs with `--app`, `--title`, `--category`, `--domain`, `--activity-type active|idle`, and `--limit`.
-6. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
-7. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
+3. Use `cargo run -- audit YYYY-MM-DD --json` to inspect log quality gaps, overlaps, invalid rows, and open checkpoint state.
+4. Use `cargo run -- day YYYY-MM-DD --json` for daily summaries.
+5. Use `cargo run -- logs YYYY-MM-DD --json` for raw sessions.
+6. Narrow logs with `--app`, `--title`, `--category`, `--domain`, `--activity-type active|idle`, and `--limit`.
+7. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
+8. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
 
 ## Operations
 
