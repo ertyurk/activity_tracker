@@ -9,6 +9,7 @@ In-progress local-first macOS activity tracker for building near-perfect persona
 - Tolerates brief active-app probe misses so transient AppleScript/macOS hiccups do not create false gaps.
 - Records longer unknown spans as `activity_type: "untracked"` when probing recovers, so missing time stays visible.
 - Captures active browser tab title and URL from the same active-tab AppleScript sample when the browser supports it.
+- Stabilizes brief same-browser title/URL probe misses from current tab context without mixing conflicting tab data.
 - Captures native app window title when macOS reports it, and atomically falls back to the foreground app title/name when window-level title is unavailable.
 - Stores source-of-truth logs in SQLite under `~/.activity_tracker/activity.db`.
 - Maintains indexed epoch timestamps in SQLite for scalable day/range queries.

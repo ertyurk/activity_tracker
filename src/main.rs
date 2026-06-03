@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 use activity_tracker::{
-    ActivityAudit, ActivityProbe, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS,
+    ActivityAudit, ActivityProbe, BrowserContextStabilizer, DEFAULT_AUDIT_GAP_THRESHOLD_SECONDS,
     DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS, DEFAULT_IDLE_THRESHOLD_SECONDS,
     DEFAULT_INTERVAL_SECONDS, DEFAULT_PROBE_MISS_TOLERANCE, DEFAULT_RECENT_CHECKPOINT_SECONDS,
     LogStore, MacOsProbe, ProbeMissStabilizer, QueryTimeWindowInput, Result, TrackerError,
@@ -351,6 +351,8 @@ fn run_tracker(store: &LogStore, args: TrackArgs) -> Result<()> {
         args.idle_threshold_seconds,
     );
     let mut stabilizer = ProbeMissStabilizer::new(DEFAULT_PROBE_MISS_TOLERANCE);
+    let mut browser_context_stabilizer =
+        BrowserContextStabilizer::new(DEFAULT_PROBE_MISS_TOLERANCE);
     checkpoint_current_session(store, &state, Local::now())?;
 
     if !args.quiet {
@@ -361,6 +363,7 @@ fn run_tracker(store: &LogStore, args: TrackArgs) -> Result<()> {
         thread::sleep(interval);
         let next_entity =
             stabilizer.stabilize(active_entity_or_none(&probe), state.current_entity());
+        let next_entity = browser_context_stabilizer.stabilize(next_entity, state.current_entity());
         let idle_seconds = idle_seconds_or_none(&probe);
         let now = Local::now();
 

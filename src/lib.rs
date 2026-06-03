@@ -427,6 +427,49 @@ impl ProbeMissStabilizer {
 }
 
 #[derive(Debug, Clone)]
+pub struct BrowserContextStabilizer {
+    max_consecutive_misses: u8,
+    consecutive_misses: u8,
+}
+
+impl BrowserContextStabilizer {
+    #[must_use]
+    pub const fn new(max_consecutive_misses: u8) -> Self {
+        Self {
+            max_consecutive_misses,
+            consecutive_misses: 0,
+        }
+    }
+
+    #[must_use]
+    pub fn stabilize(
+        &mut self,
+        observed: Option<ActiveEntity>,
+        current: Option<&ActiveEntity>,
+    ) -> Option<ActiveEntity> {
+        let Some(observed_entity) = observed else {
+            self.consecutive_misses = 0;
+            return None;
+        };
+        let Some(current_entity) = current else {
+            self.consecutive_misses = 0;
+            return Some(observed_entity);
+        };
+        let Some(stabilized) = stabilized_browser_context(&observed_entity, current_entity) else {
+            self.consecutive_misses = 0;
+            return Some(observed_entity);
+        };
+
+        self.consecutive_misses = self.consecutive_misses.saturating_add(1);
+        if self.consecutive_misses <= self.max_consecutive_misses {
+            Some(stabilized)
+        } else {
+            Some(observed_entity)
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct TrackerState {
     current_entity: Option<ActiveEntity>,
     session_start: DateTime<Local>,
@@ -1991,6 +2034,79 @@ pub fn is_browser(bundle_id: &str) -> bool {
             | "com.google.Chrome.canary"
             | "com.microsoft.edgemac"
     )
+}
+
+fn stabilized_browser_context(
+    observed: &ActiveEntity,
+    current: &ActiveEntity,
+) -> Option<ActiveEntity> {
+    if observed.activity_type != ActivityType::Active
+        || current.activity_type != ActivityType::Active
+        || !is_browser(&observed.bundle_id)
+        || observed.bundle_id != current.bundle_id
+        || observed.name != current.name
+        || browser_context_complete(observed)
+        || !browser_context_complete(current)
+    {
+        return None;
+    }
+
+    let observed_title = observed.title.as_deref().and_then(non_empty_borrowed);
+    let observed_url = observed.url.as_deref().and_then(non_empty_borrowed);
+    let current_title = current.title.as_deref().and_then(non_empty_borrowed);
+    let current_url = current.url.as_deref().and_then(non_empty_borrowed);
+    let same_url = observed_url.is_some() && observed_url == current_url;
+    let same_title = observed_title.is_some() && observed_title == current_title;
+    let all_context_missing = observed_title.is_none() && observed_url.is_none();
+    if !same_url && !same_title && !all_context_missing {
+        return None;
+    }
+
+    let mut stabilized = observed.clone();
+    if stabilized
+        .title
+        .as_deref()
+        .and_then(non_empty_borrowed)
+        .is_none()
+    {
+        stabilized.title = current.title.clone();
+    }
+    if stabilized
+        .url
+        .as_deref()
+        .and_then(non_empty_borrowed)
+        .is_none()
+    {
+        stabilized.url = current.url.clone();
+    }
+    stabilized.category = category_for_activity(
+        &stabilized.bundle_id,
+        &stabilized.name,
+        stabilized.url.as_deref(),
+    );
+    Some(stabilized)
+}
+
+fn browser_context_complete(entity: &ActiveEntity) -> bool {
+    if !is_browser(&entity.bundle_id) {
+        return true;
+    }
+    browser_entity_blank_tab(entity)
+        || (entity
+            .title
+            .as_deref()
+            .and_then(non_empty_borrowed)
+            .is_some()
+            && entity.url.as_deref().and_then(non_empty_borrowed).is_some())
+}
+
+fn browser_entity_blank_tab(entity: &ActiveEntity) -> bool {
+    is_browser(&entity.bundle_id)
+        && (entity
+            .title
+            .as_deref()
+            .is_some_and(is_browser_blank_tab_title)
+            || entity.url.as_deref().is_some_and(is_browser_blank_tab_url))
 }
 
 pub fn run_osascript(script: &str) -> Result<String> {
@@ -4561,6 +4677,130 @@ mod tests {
         );
         assert_eq!(
             stabilizer.stabilize(None, Some(&current)).as_ref(),
+            Some(&current)
+        );
+    }
+
+    #[test]
+    fn browser_context_stabilizer_preserves_short_context_misses() {
+        let mut stabilizer = BrowserContextStabilizer::new(2);
+        let current = entity();
+        let mut missing = current.clone();
+        missing.title = None;
+        missing.url = None;
+        missing.category = "Browser".to_string();
+
+        assert_eq!(
+            stabilizer
+                .stabilize(Some(missing.clone()), Some(&current))
+                .as_ref(),
+            Some(&current)
+        );
+        assert_eq!(
+            stabilizer
+                .stabilize(Some(missing.clone()), Some(&current))
+                .as_ref(),
+            Some(&current)
+        );
+        assert_eq!(
+            stabilizer.stabilize(Some(missing.clone()), Some(&current)),
+            Some(missing)
+        );
+    }
+
+    #[test]
+    fn browser_context_stabilizer_fills_missing_title_for_same_url() -> AnyhowResult<()> {
+        let mut stabilizer = BrowserContextStabilizer::new(1);
+        let current = entity();
+        let mut missing_title = current.clone();
+        missing_title.title = None;
+        missing_title.category = "Browser".to_string();
+
+        let stabilized = stabilizer
+            .stabilize(Some(missing_title), Some(&current))
+            .ok_or_else(|| anyhow::anyhow!("missing stabilized context"))?;
+
+        assert_eq!(stabilized.title.as_deref(), Some("Example Project"));
+        assert_eq!(
+            stabilized.url.as_deref(),
+            Some("https://www.example.com/path")
+        );
+        assert_eq!(stabilized.category, "Browser");
+        Ok(())
+    }
+
+    #[test]
+    fn browser_context_stabilizer_fills_missing_url_for_same_title() -> AnyhowResult<()> {
+        let mut stabilizer = BrowserContextStabilizer::new(1);
+        let current = entity();
+        let mut missing_url = current.clone();
+        missing_url.url = None;
+
+        let stabilized = stabilizer
+            .stabilize(Some(missing_url), Some(&current))
+            .ok_or_else(|| anyhow::anyhow!("missing stabilized context"))?;
+
+        assert_eq!(stabilized.title.as_deref(), Some("Example Project"));
+        assert_eq!(
+            stabilized.url.as_deref(),
+            Some("https://www.example.com/path")
+        );
+        assert_eq!(stabilized.category, "Browser");
+        Ok(())
+    }
+
+    #[test]
+    fn browser_context_stabilizer_does_not_mix_different_urls() -> AnyhowResult<()> {
+        let mut stabilizer = BrowserContextStabilizer::new(1);
+        let current = entity();
+        let mut observed = current.clone();
+        observed.title = None;
+        observed.url = Some("https://github.com/ertyurk/activity_tracker".to_string());
+
+        let stabilized = stabilizer
+            .stabilize(Some(observed.clone()), Some(&current))
+            .ok_or_else(|| anyhow::anyhow!("missing observed context"))?;
+
+        assert_eq!(stabilized, observed);
+        Ok(())
+    }
+
+    #[test]
+    fn browser_context_stabilizer_does_not_mix_different_titles() -> AnyhowResult<()> {
+        let mut stabilizer = BrowserContextStabilizer::new(1);
+        let current = entity();
+        let mut observed = current.clone();
+        observed.title = Some("Other Project".to_string());
+        observed.url = None;
+
+        let stabilized = stabilizer
+            .stabilize(Some(observed.clone()), Some(&current))
+            .ok_or_else(|| anyhow::anyhow!("missing observed context"))?;
+
+        assert_eq!(stabilized, observed);
+        Ok(())
+    }
+
+    #[test]
+    fn browser_context_stabilizer_resets_after_complete_sample() {
+        let mut stabilizer = BrowserContextStabilizer::new(1);
+        let current = entity();
+        let mut missing = current.clone();
+        missing.title = None;
+        missing.url = None;
+
+        assert_eq!(
+            stabilizer
+                .stabilize(Some(missing.clone()), Some(&current))
+                .as_ref(),
+            Some(&current)
+        );
+        assert_eq!(
+            stabilizer.stabilize(Some(current.clone()), Some(&current)),
+            Some(current.clone())
+        );
+        assert_eq!(
+            stabilizer.stabilize(Some(missing), Some(&current)).as_ref(),
             Some(&current)
         );
     }
