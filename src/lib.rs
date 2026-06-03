@@ -147,7 +147,7 @@ pub struct ActiveEntity {
     pub activity_type: ActivityType,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageSession {
     pub start_time: DateTime<Local>,
     pub end_time: DateTime<Local>,
@@ -425,6 +425,8 @@ pub struct StorageVerification {
     pub jsonl_readable: bool,
     pub jsonl_error: Option<String>,
     pub jsonl_session_count: usize,
+    pub mirror_count_matches: bool,
+    pub mirror_content_matches: bool,
     pub mirror_in_sync: bool,
 }
 
@@ -857,6 +859,7 @@ impl LogStore {
         let sqlite_integrity_messages = self.sqlite_integrity_check()?;
         let sqlite_integrity_ok = sqlite_integrity_messages.len() == 1
             && sqlite_integrity_messages.first() == Some(&"ok".to_string());
+        let sqlite_sessions = self.load_sessions_from_db()?;
         let sqlite_session_count = self.db_session_count()?;
         let jsonl_exists = jsonl_path.exists();
         let jsonl_result = if jsonl_exists {
@@ -864,11 +867,14 @@ impl LogStore {
         } else {
             Ok(Vec::new())
         };
-        let (jsonl_readable, jsonl_error, jsonl_session_count) = match jsonl_result {
-            Ok(sessions) => (true, None, sessions.len()),
-            Err(error) => (false, Some(error.to_string()), 0),
+        let (jsonl_readable, jsonl_error, jsonl_sessions) = match jsonl_result {
+            Ok(sessions) => (true, None, sessions),
+            Err(error) => (false, Some(error.to_string()), Vec::new()),
         };
-        let mirror_in_sync = jsonl_readable && sqlite_session_count as usize == jsonl_session_count;
+        let jsonl_session_count = jsonl_sessions.len();
+        let mirror_count_matches = jsonl_readable && sqlite_sessions.len() == jsonl_session_count;
+        let mirror_content_matches = mirror_count_matches && sqlite_sessions == jsonl_sessions;
+        let mirror_in_sync = mirror_count_matches && mirror_content_matches;
         let ok = sqlite_exists
             && sqlite_integrity_ok
             && jsonl_exists
@@ -887,6 +893,8 @@ impl LogStore {
             jsonl_readable,
             jsonl_error,
             jsonl_session_count,
+            mirror_count_matches,
+            mirror_content_matches,
             mirror_in_sync,
         })
     }
@@ -4745,7 +4753,48 @@ mod tests {
         assert!(report.jsonl_readable);
         assert_eq!(report.jsonl_error, None);
         assert_eq!(report.jsonl_session_count, 1);
+        assert!(report.mirror_count_matches);
+        assert!(report.mirror_content_matches);
         assert!(report.mirror_in_sync);
+        Ok(())
+    }
+
+    #[test]
+    fn verify_storage_rejects_stale_jsonl_mirror_content() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let end = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing end"))?;
+        let session = UsageSession::from_entity(&entity(), start, end)
+            .ok_or_else(|| anyhow::anyhow!("missing session"))?;
+
+        store.append_session(&session)?;
+        let mut stale = session.clone();
+        stale.category = "Development".to_string();
+        fs::write(
+            store.sessions_path(),
+            format!("{}\n", serde_json::to_string(&stale)?),
+        )?;
+
+        let stale_report = store.verify_storage()?;
+        assert!(!stale_report.ok);
+        assert!(stale_report.jsonl_readable);
+        assert_eq!(stale_report.jsonl_session_count, 1);
+        assert!(stale_report.mirror_count_matches);
+        assert!(!stale_report.mirror_content_matches);
+        assert!(!stale_report.mirror_in_sync);
+
+        store.repair_jsonl_mirror()?;
+        let repaired = store.verify_storage()?;
+        assert!(repaired.ok);
+        assert!(repaired.mirror_content_matches);
+        assert!(repaired.mirror_in_sync);
         Ok(())
     }
 
@@ -4769,6 +4818,9 @@ mod tests {
         let broken = store.verify_storage()?;
         assert!(!broken.ok);
         assert!(!broken.jsonl_readable);
+        assert!(!broken.mirror_count_matches);
+        assert!(!broken.mirror_content_matches);
+        assert!(!broken.mirror_in_sync);
 
         let repair = store.repair_jsonl_mirror()?;
         let verified = store.verify_storage()?;
@@ -4777,6 +4829,8 @@ mod tests {
         assert_eq!(repair.sqlite_session_count, 1);
         assert_eq!(repair.jsonl_session_count, 1);
         assert!(verified.ok);
+        assert!(verified.mirror_count_matches);
+        assert!(verified.mirror_content_matches);
         assert!(verified.mirror_in_sync);
         Ok(())
     }

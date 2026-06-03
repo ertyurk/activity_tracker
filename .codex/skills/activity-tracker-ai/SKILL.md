@@ -69,7 +69,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Keep routine day/range reads backed by SQLite indexed time columns rather than all-history scans.
 - Persist each completed session immediately to SQLite and mirror it to JSONL; CSV is derived.
 - Configure each SQLite connection with WAL, normal synchronous mode, foreign keys, and busy timeout so background writes and agent reads coexist.
-- Use `verify --json` to check SQLite integrity and JSONL mirror readability/count sync.
+- Use `verify --json` to check SQLite integrity and JSONL mirror readability/count/content sync.
 - Use `repair-mirror --json` to rebuild JSONL mirror and CSV view from SQLite if verification reports a broken or out-of-sync mirror.
 - Maintain the SQLite `open_session` heartbeat so crash/restart recovery does not lose the active span.
 - Include the provisional open session in live query commands (`day`, `logs`, `query`, `summary`, `report`) when it overlaps the query.
@@ -77,7 +77,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - Treat uncovered leading/trailing spans inside rolling `agent --last-minutes` windows as coverage gaps so auto reports know when their requested interval is only partially observed.
 - Use windowed `audit` for exact report-window quality checks before calling repairs.
 - Keep `inventory --json` window-aware and backed by the same indexed query window; use it for filter menus instead of scanning raw history in callers.
-- Keep `schema --json` stable enough for SwiftUI/tool harness discovery; update it whenever commands, filters, agent fields, session fields, defaults, or quality issue kinds change.
+- Keep `schema --json` stable enough for SwiftUI/tool harness discovery; update it whenever commands, filters, agent fields, storage verification fields, session fields, defaults, or quality issue kinds change.
 - Keep `now --json` cheap and suitable for frequent SwiftUI/menu-bar polling.
 - Keep `agent --json` explicit about report readiness: `report_ready` should be true only when service/storage/window coverage are ready and no actionable repair remains; `action_required` should reflect actionable repairs, while residual non-repairable warnings stay visible in the repair plan and quality fields.
 - Use app identity plus browser URL domains for categories; reclassify stored sessions when mappings change.

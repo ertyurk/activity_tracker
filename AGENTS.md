@@ -28,9 +28,9 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - `query` and `logs` should support narrow filters plus broad `--text` recall across app, bundle, title, URL, domain, category, and activity type.
 - `query` and `logs` should support `--order asc|desc`; agents should use `--order desc --limit N` for latest matching rows.
 - `inventory --json` should provide windowed app/domain/category/activity-type facets for SwiftUI filter menus and AI planning without raw-log scans.
-- `schema --json` should expose CLI/data-contract capabilities, including agent output fields, for SwiftUI and tool harness setup.
+- `schema --json` should expose CLI/data-contract capabilities, including agent output and storage verification fields, for SwiftUI and tool harness setup.
 - `now --json` should remain a cheap current-activity poll for SwiftUI/menu-bar clients.
-- `verify --json` should prove SQLite integrity and JSONL mirror readability/count sync.
+- `verify --json` should prove SQLite integrity and JSONL mirror readability/count/content sync.
 - `repair-mirror --json` should rebuild JSONL mirror and CSV view from SQLite source of truth when verification fails.
 - Keep window-scoped quality issue samples in `agent --json`; compact today-wide audit samples to keep payload bounded.
 - Keep `agent` repair commands scoped to the same audited window, and keep `reclassify`/repair commands window-aware so agents do not mutate all history for a narrow report.

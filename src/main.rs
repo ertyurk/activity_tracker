@@ -1058,7 +1058,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
     let now = Local::now();
     if args.json {
         let value = serde_json::json!({
-            "schema_version": 2,
+            "schema_version": 3,
             "generated_at": now,
             "binary": std::env::current_exe().ok(),
             "storage": {
@@ -1119,6 +1119,22 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
             "filters": ["--app", "--title", "--url", "--text", "--category", "--domain", "--activity-type", "--limit", "--order"],
             "service_install_args": ["--bin", "--interval-seconds", "--idle-threshold-seconds", "--no-load"],
             "service_status_fields": ["label", "loaded", "running", "pid", "program", "arguments", "stdout_path", "stderr_path", "raw", "error"],
+            "storage_verification_fields": [
+                "ok",
+                "sqlite_path",
+                "sqlite_exists",
+                "sqlite_integrity_ok",
+                "sqlite_integrity_messages",
+                "sqlite_session_count",
+                "jsonl_path",
+                "jsonl_exists",
+                "jsonl_readable",
+                "jsonl_error",
+                "jsonl_session_count",
+                "mirror_count_matches",
+                "mirror_content_matches",
+                "mirror_in_sync",
+            ],
             "agent_fields": [
                 {"name": "generated_at", "type": "rfc3339_datetime", "required": true},
                 {"name": "ready", "type": "boolean", "required": true},
@@ -1206,7 +1222,7 @@ fn print_schema(store: &LogStore, args: OutputArgs) -> Result<()> {
         });
         print_json(&value)
     } else {
-        println!("schema_version: 2");
+        println!("schema_version: 3");
         println!("storage_source_of_truth: sqlite");
         println!("default_root: ~/.activity_tracker");
         println!("sqlite: {}", store.db_path().display());
@@ -1629,6 +1645,14 @@ fn print_verify(store: &LogStore, args: OutputArgs) -> Result<()> {
         println!("jsonl_exists: {}", yes_no(report.jsonl_exists));
         println!("jsonl_readable: {}", yes_no(report.jsonl_readable));
         println!("jsonl_session_count: {}", report.jsonl_session_count);
+        println!(
+            "mirror_count_matches: {}",
+            yes_no(report.mirror_count_matches)
+        );
+        println!(
+            "mirror_content_matches: {}",
+            yes_no(report.mirror_content_matches)
+        );
         println!("mirror_in_sync: {}", yes_no(report.mirror_in_sync));
         if let Some(error) = report.jsonl_error {
             println!("jsonl_error: {error}");
