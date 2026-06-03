@@ -24,6 +24,7 @@ pub const DEFAULT_HEALTH_STALE_THRESHOLD_SECONDS: u64 = 60;
 pub const SQLITE_BUSY_TIMEOUT_SECONDS: u64 = 5;
 pub const MAX_AUDIT_QUALITY_ISSUES: usize = 50;
 pub const UNREPAIRABLE_BROWSER_MISMATCH_UNTRACKED_SECONDS: f64 = 10.0;
+pub const UNREPAIRABLE_BROWSER_MISSING_TITLE_UNTRACKED_SECONDS: f64 = 10.0;
 pub const SERVICE_LABEL: &str = "com.local.activity-tracker";
 pub const IDLE_BUNDLE_ID: &str = "local.activity_tracker.idle";
 pub const UNTRACKED_BUNDLE_ID: &str = "local.activity_tracker.untracked";
@@ -1414,6 +1415,7 @@ impl LogStore {
 
             if browser_session_context_unavailable(session)
                 || short_unrepairable_browser_context_mismatch(session)
+                || short_unrepairable_browser_missing_title(session)
             {
                 report.repaired += 1;
                 report.untracked_repaired += 1;
@@ -3575,6 +3577,12 @@ fn short_unrepairable_browser_context_mismatch(session: &UsageSession) -> bool {
         && session.duration_seconds <= UNREPAIRABLE_BROWSER_MISMATCH_UNTRACKED_SECONDS
 }
 
+fn short_unrepairable_browser_missing_title(session: &UsageSession) -> bool {
+    browser_context_missing_title(session)
+        && !browser_missing_url(session)
+        && session.duration_seconds <= UNREPAIRABLE_BROWSER_MISSING_TITLE_UNTRACKED_SECONDS
+}
+
 fn browser_blank_tab(session: &UsageSession) -> bool {
     is_browser(&session.bundle_id)
         && (session
@@ -5412,21 +5420,39 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("missing start"))?;
         let short_start = start + seconds_delta(10)?;
         let long_start = start + seconds_delta(30)?;
+        let missing_title_start = start + seconds_delta(70)?;
+        let long_missing_title_start = start + seconds_delta(90)?;
         let mut short_entity = entity();
         short_entity.title = Some("Settings - Claude".to_string());
         short_entity.url = Some("https://app.slack.com/client/TF7GEHYHZ/dms".to_string());
         short_entity.category = "Communication".to_string();
         let mut long_entity = short_entity.clone();
         long_entity.title = Some("Claude Console".to_string());
+        let mut missing_title_entity = short_entity.clone();
+        missing_title_entity.title = None;
         let short_mismatch =
             UsageSession::from_entity(&short_entity, short_start, short_start + seconds_delta(2)?)
                 .ok_or_else(|| anyhow::anyhow!("missing short mismatch"))?;
         let long_mismatch =
             UsageSession::from_entity(&long_entity, long_start, long_start + seconds_delta(30)?)
                 .ok_or_else(|| anyhow::anyhow!("missing long mismatch"))?;
+        let missing_title = UsageSession::from_entity(
+            &missing_title_entity,
+            missing_title_start,
+            missing_title_start + seconds_delta(2)?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing title-only session"))?;
+        let long_missing_title = UsageSession::from_entity(
+            &missing_title_entity,
+            long_missing_title_start,
+            long_missing_title_start + seconds_delta(30)?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing long title-only session"))?;
 
         store.append_session(&short_mismatch)?;
         store.append_session(&long_mismatch)?;
+        store.append_session(&missing_title)?;
+        store.append_session(&long_missing_title)?;
         let dry_run = store.repair_context(true)?;
         let report = store.repair_context(false)?;
         let sessions = store.load_sessions()?;
@@ -5439,17 +5465,33 @@ mod tests {
             .iter()
             .find(|session| session.start_time == long_start)
             .ok_or_else(|| anyhow::anyhow!("missing unresolved long mismatch"))?;
+        let repaired_missing_title = sessions
+            .iter()
+            .find(|session| session.start_time == missing_title_start)
+            .ok_or_else(|| anyhow::anyhow!("missing repaired title-only session"))?;
+        let unresolved_missing_title = sessions
+            .iter()
+            .find(|session| session.start_time == long_missing_title_start)
+            .ok_or_else(|| anyhow::anyhow!("missing unresolved title-only session"))?;
 
         assert_eq!(dry_run.mismatches_found, 2);
-        assert_eq!(dry_run.repaired, 1);
-        assert_eq!(dry_run.untracked_repaired, 1);
-        assert_eq!(report.repaired, 1);
+        assert_eq!(dry_run.missing_titles_found, 2);
+        assert_eq!(dry_run.repaired, 2);
+        assert_eq!(dry_run.untracked_repaired, 2);
+        assert_eq!(report.repaired, 2);
         assert_eq!(audit.browser_context_mismatch_count, 1);
-        assert_eq!(audit.untracked_session_count, 1);
+        assert_eq!(audit.missing_title_count, 1);
+        assert_eq!(audit.untracked_session_count, 2);
         assert_eq!(repaired_short.activity_type, ActivityType::Untracked);
         assert_eq!(repaired_short.app_name, "Untracked");
+        assert_eq!(
+            repaired_missing_title.activity_type,
+            ActivityType::Untracked
+        );
         assert_eq!(unresolved_long.activity_type, ActivityType::Active);
         assert_eq!(unresolved_long.title.as_deref(), Some("Claude Console"));
+        assert_eq!(unresolved_missing_title.activity_type, ActivityType::Active);
+        assert_eq!(unresolved_missing_title.title, None);
         Ok(())
     }
 
@@ -5520,19 +5562,19 @@ mod tests {
         assert_eq!(dry_run.mismatches_found, 0);
         assert_eq!(dry_run.missing_titles_found, 4);
         assert_eq!(dry_run.missing_urls_found, 3);
-        assert_eq!(dry_run.repaired, 4);
+        assert_eq!(dry_run.repaired, 5);
         assert_eq!(dry_run.title_repaired, 2);
         assert_eq!(dry_run.url_repaired, 2);
         assert_eq!(dry_run.missing_title_repaired, 2);
         assert_eq!(dry_run.missing_url_repaired, 2);
         assert_eq!(dry_run.neighbor_repaired, 3);
         assert_eq!(dry_run.unique_observation_repaired, 0);
-        assert_eq!(dry_run.untracked_repaired, 1);
-        assert_eq!(report.repaired, 4);
+        assert_eq!(dry_run.untracked_repaired, 2);
+        assert_eq!(report.repaired, 5);
         assert_eq!(second_report.repaired, 0);
-        assert_eq!(audit.missing_title_count, 1);
+        assert_eq!(audit.missing_title_count, 0);
         assert_eq!(audit.browser_missing_url_count, 0);
-        assert_eq!(audit.untracked_session_count, 1);
+        assert_eq!(audit.untracked_session_count, 2);
         assert_eq!(repaired_title.title.as_deref(), Some(slack_title));
         assert_eq!(repaired_title.url.as_deref(), Some(slack_url));
         assert_eq!(repaired_title.category, "Communication");
@@ -5542,8 +5584,8 @@ mod tests {
         assert_eq!(repaired_both.title.as_deref(), Some(mail_title));
         assert_eq!(repaired_both.url.as_deref(), Some(mail_url));
         assert_eq!(repaired_both.category, "Email");
-        assert_eq!(unresolved_title.title, None);
-        assert_eq!(unresolved_title.url.as_deref(), Some(repo_url));
+        assert_eq!(unresolved_title.activity_type, ActivityType::Untracked);
+        assert_eq!(unresolved_title.app_name, "Untracked");
         assert_eq!(unresolved_context.activity_type, ActivityType::Untracked);
         assert_eq!(unresolved_context.app_name, "Untracked");
         assert_eq!(unresolved_context.bundle_id, UNTRACKED_BUNDLE_ID);
