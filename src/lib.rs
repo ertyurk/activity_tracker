@@ -679,9 +679,16 @@ pub fn install_launch_agent(binary: &Path, store: &LogStore, load: bool) -> Resu
     let stdout = store.logs_dir().join("launchd.out.log");
     let stderr = store.logs_dir().join("launchd.err.log");
     let plist = launch_agent_plist(binary, &stdout, &stderr);
+
+    if load {
+        let _bootout_result = launchctl_bootout();
+        wait_for_service_unloaded(StdDuration::from_secs(5))?;
+    }
+
     fs::write(&plist_path, plist)?;
 
     if load {
+        thread::sleep(StdDuration::from_millis(250));
         launchctl_bootstrap(&plist_path)?;
         launchctl_kickstart()?;
     }
@@ -945,6 +952,28 @@ fn launchctl_bootout() -> Result<()> {
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         })
     }
+}
+
+fn wait_for_service_unloaded(timeout: StdDuration) -> Result<()> {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if !launchctl_service_loaded()? {
+            return Ok(());
+        }
+        thread::sleep(StdDuration::from_millis(100));
+    }
+    Ok(())
+}
+
+fn launchctl_service_loaded() -> Result<bool> {
+    let target = launchctl_target()?;
+    let service = format!("{target}/{SERVICE_LABEL}");
+    let output = output_with_timeout(
+        Command::new("launchctl").args(["print", &service]),
+        StdDuration::from_secs(2),
+        "launchctl print",
+    )?;
+    Ok(output.status.success())
 }
 
 fn escape_applescript_string(value: &str) -> String {
