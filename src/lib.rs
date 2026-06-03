@@ -387,6 +387,18 @@ pub struct RepairUrlsReport {
     pub dry_run: bool,
 }
 
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct RepairContextReport {
+    pub scanned: usize,
+    pub mismatches_found: usize,
+    pub repaired: usize,
+    pub title_repaired: usize,
+    pub url_repaired: usize,
+    pub neighbor_repaired: usize,
+    pub unique_observation_repaired: usize,
+    pub dry_run: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionCheckpoint {
     pub start_time: DateTime<Local>,
@@ -1042,6 +1054,55 @@ impl LogStore {
         Ok(report)
     }
 
+    pub fn repair_context(&self, dry_run: bool) -> Result<RepairContextReport> {
+        self.ensure_dirs()?;
+        let sessions = self.load_sessions_from_db()?;
+        let url_titles = unique_clean_browser_titles_by_url(&sessions);
+        let mut report = RepairContextReport {
+            dry_run,
+            ..RepairContextReport::default()
+        };
+
+        for (index, session) in sessions.iter().enumerate() {
+            report.scanned += 1;
+            if !browser_context_mismatch(session) {
+                continue;
+            }
+            report.mismatches_found += 1;
+            let previous = index.checked_sub(1).and_then(|index| sessions.get(index));
+            let next = sessions.get(index + 1);
+            let Some(repair) =
+                repaired_browser_context_for_session(session, previous, next, &url_titles)
+            else {
+                continue;
+            };
+
+            report.repaired += 1;
+            if repair.title.as_ref() != session.title.as_ref() {
+                report.title_repaired += 1;
+            }
+            if repair.url.as_ref() != session.url.as_ref() {
+                report.url_repaired += 1;
+            }
+            match repair.source {
+                BrowserContextRepairSource::Neighbor => report.neighbor_repaired += 1,
+                BrowserContextRepairSource::UniqueObservation => {
+                    report.unique_observation_repaired += 1;
+                }
+            }
+            if !dry_run {
+                self.update_session_context(session, repair.title.as_ref(), repair.url.as_ref())?;
+            }
+        }
+
+        if !dry_run && report.repaired > 0 {
+            self.rewrite_jsonl_mirror_from_db()?;
+            self.refresh_default_csv()?;
+        }
+
+        Ok(report)
+    }
+
     pub fn checkpoint_session(
         &self,
         entity: &ActiveEntity,
@@ -1370,6 +1431,45 @@ impl LogStore {
                AND activity_type = ?8",
             params![
                 url,
+                session.start_time.to_rfc3339(),
+                session.end_time.to_rfc3339(),
+                &session.app_name,
+                &session.bundle_id,
+                &session.title,
+                &session.url,
+                session.activity_type.to_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn update_session_context(
+        &self,
+        session: &UsageSession,
+        title: Option<&String>,
+        url: Option<&String>,
+    ) -> Result<()> {
+        let mut repaired = session.clone();
+        repaired.title = title.cloned();
+        repaired.url = url.cloned();
+        let category = category_for_session(&repaired);
+        let conn = Connection::open(self.db_path())?;
+        conn.execute(
+            "UPDATE sessions
+             SET title = ?1,
+                 url = ?2,
+                 category = ?3
+             WHERE start_time = ?4
+               AND end_time = ?5
+               AND app_name = ?6
+               AND bundle_id = ?7
+               AND title IS ?8
+               AND url IS ?9
+               AND activity_type = ?10",
+            params![
+                title,
+                url,
+                category,
                 session.start_time.to_rfc3339(),
                 session.end_time.to_rfc3339(),
                 &session.app_name,
@@ -2726,6 +2826,171 @@ fn browser_missing_url(session: &UsageSession) -> bool {
 }
 
 #[derive(Debug, Clone)]
+struct BrowserContextRepair {
+    title: Option<String>,
+    url: Option<String>,
+    source: BrowserContextRepairSource,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BrowserContextRepairSource {
+    Neighbor,
+    UniqueObservation,
+}
+
+fn repaired_browser_context_for_session(
+    session: &UsageSession,
+    previous: Option<&UsageSession>,
+    next: Option<&UsageSession>,
+    url_titles: &HashMap<String, String>,
+) -> Option<BrowserContextRepair> {
+    if !browser_context_mismatch(session) {
+        return None;
+    }
+
+    repaired_browser_context_from_neighbors(session, previous, next).or_else(|| {
+        session
+            .url
+            .as_deref()
+            .and_then(non_empty_borrowed)
+            .and_then(|url| url_titles.get(url))
+            .and_then(|title| {
+                browser_context_repair_with_title(
+                    session,
+                    title,
+                    BrowserContextRepairSource::UniqueObservation,
+                )
+            })
+    })
+}
+
+fn repaired_browser_context_from_neighbors(
+    session: &UsageSession,
+    previous: Option<&UsageSession>,
+    next: Option<&UsageSession>,
+) -> Option<BrowserContextRepair> {
+    let title = session.title.as_deref().and_then(non_empty_borrowed);
+    let url = session.url.as_deref().and_then(non_empty_borrowed);
+    let mut same_title_urls = Vec::new();
+    let mut same_url_titles = Vec::new();
+
+    for neighbor in [previous, next].into_iter().flatten() {
+        if !same_browser_app_session(session, neighbor) || browser_context_mismatch(neighbor) {
+            continue;
+        }
+        let Some((neighbor_title, neighbor_url)) = clean_browser_context(neighbor) else {
+            continue;
+        };
+        if title.is_some_and(|title| title == neighbor_title) {
+            same_title_urls.push(neighbor_url);
+        }
+        if url.is_some_and(|url| url == neighbor_url) {
+            same_url_titles.push(neighbor_title);
+        }
+    }
+
+    unique_str(same_title_urls)
+        .and_then(|url| {
+            browser_context_repair_with_url(session, url, BrowserContextRepairSource::Neighbor)
+        })
+        .or_else(|| {
+            unique_str(same_url_titles).and_then(|title| {
+                browser_context_repair_with_title(
+                    session,
+                    title,
+                    BrowserContextRepairSource::Neighbor,
+                )
+            })
+        })
+}
+
+fn browser_context_repair_with_url(
+    session: &UsageSession,
+    url: &str,
+    source: BrowserContextRepairSource,
+) -> Option<BrowserContextRepair> {
+    if session.url.as_deref() == Some(url) {
+        return None;
+    }
+    let mut repaired = session.clone();
+    repaired.url = Some(url.to_string());
+    (!browser_context_mismatch(&repaired)).then_some(BrowserContextRepair {
+        title: repaired.title,
+        url: repaired.url,
+        source,
+    })
+}
+
+fn browser_context_repair_with_title(
+    session: &UsageSession,
+    title: &str,
+    source: BrowserContextRepairSource,
+) -> Option<BrowserContextRepair> {
+    if session.title.as_deref() == Some(title) {
+        return None;
+    }
+    let mut repaired = session.clone();
+    repaired.title = Some(title.to_string());
+    (!browser_context_mismatch(&repaired)).then_some(BrowserContextRepair {
+        title: repaired.title,
+        url: repaired.url,
+        source,
+    })
+}
+
+fn unique_clean_browser_titles_by_url(sessions: &[UsageSession]) -> HashMap<String, String> {
+    let mut candidates: HashMap<String, Option<String>> = HashMap::new();
+    for session in sessions {
+        let Some((title, url)) = clean_browser_context(session) else {
+            continue;
+        };
+        let entry = candidates
+            .entry(url.to_string())
+            .or_insert_with(|| Some(title.to_string()));
+        if entry.as_deref() != Some(title) {
+            *entry = None;
+        }
+    }
+    candidates
+        .into_iter()
+        .filter_map(|(url, title)| title.map(|title| (url, title)))
+        .collect()
+}
+
+fn clean_browser_context(session: &UsageSession) -> Option<(&str, &str)> {
+    if session.activity_type != ActivityType::Active
+        || !is_browser(&session.bundle_id)
+        || browser_blank_tab(session)
+        || browser_context_mismatch(session)
+    {
+        return None;
+    }
+    let title = session.title.as_deref().and_then(non_empty_borrowed)?;
+    let url = session.url.as_deref().and_then(non_empty_borrowed)?;
+    Some((title, url))
+}
+
+fn same_browser_app_session(left: &UsageSession, right: &UsageSession) -> bool {
+    is_browser(&left.bundle_id)
+        && left.bundle_id == right.bundle_id
+        && left.app_name == right.app_name
+        && left.activity_type == ActivityType::Active
+        && right.activity_type == ActivityType::Active
+}
+
+fn unique_str(values: Vec<&str>) -> Option<&str> {
+    let mut unique = None;
+    for value in values {
+        match unique {
+            None => unique = Some(value),
+            Some(existing) if existing == value => {}
+            Some(_) => return None,
+        }
+    }
+    unique
+}
+
+#[derive(Debug, Clone)]
 struct UrlRepair {
     url: String,
     source: UrlRepairSource,
@@ -3933,6 +4198,108 @@ mod tests {
         assert!(sessions.iter().any(|session| session.url.as_deref()
             == Some("https://example.com/ambiguous")
             && session.title.is_none()));
+        Ok(())
+    }
+
+    #[test]
+    fn repair_context_fixes_high_confidence_browser_mismatches() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 9, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let mut otto_entity = entity();
+        otto_entity.title = Some("Otto - Private AI accountant".to_string());
+        otto_entity.url = Some("https://ottokeep.com/".to_string());
+        let otto = UsageSession::from_entity(
+            &otto_entity,
+            start,
+            start + TimeDelta::try_seconds(10).ok_or_else(|| anyhow::anyhow!("missing delta"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing otto"))?;
+        let cmux_entity = ActiveEntity {
+            bundle_id: "com.cmuxterm.app".to_string(),
+            name: "cmux".to_string(),
+            title: Some("cmux".to_string()),
+            url: None,
+            category: "Development".to_string(),
+            activity_type: ActivityType::Active,
+        };
+        let cmux = UsageSession::from_entity(
+            &cmux_entity,
+            start + TimeDelta::try_seconds(10).ok_or_else(|| anyhow::anyhow!("missing delta"))?,
+            start + TimeDelta::try_seconds(20).ok_or_else(|| anyhow::anyhow!("missing delta"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing cmux"))?;
+        let mut stale_title_entity = entity();
+        stale_title_entity.title = Some("Celal (DM) - Lean Scale - Slack".to_string());
+        stale_title_entity.url = Some("https://ottokeep.com/".to_string());
+        let stale_title = UsageSession::from_entity(
+            &stale_title_entity,
+            start + TimeDelta::try_seconds(20).ok_or_else(|| anyhow::anyhow!("missing delta"))?,
+            start + TimeDelta::try_seconds(30).ok_or_else(|| anyhow::anyhow!("missing delta"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing stale title"))?;
+        let mut mail_entity = entity();
+        mail_entity.title = Some("Inbox (6) - leanscale.com Mail".to_string());
+        mail_entity.url = Some("https://mail.google.com/mail/u/0/#inbox".to_string());
+        let mail = UsageSession::from_entity(
+            &mail_entity,
+            start + TimeDelta::try_seconds(30).ok_or_else(|| anyhow::anyhow!("missing delta"))?,
+            start + TimeDelta::try_seconds(40).ok_or_else(|| anyhow::anyhow!("missing delta"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing mail"))?;
+        let mut stale_url_entity = entity();
+        stale_url_entity.title = Some("Celal (DM) - Lean Scale - Slack".to_string());
+        stale_url_entity.url = Some("https://mail.google.com/mail/u/0/#inbox".to_string());
+        let stale_url = UsageSession::from_entity(
+            &stale_url_entity,
+            start + TimeDelta::try_seconds(40).ok_or_else(|| anyhow::anyhow!("missing delta"))?,
+            start + TimeDelta::try_seconds(50).ok_or_else(|| anyhow::anyhow!("missing delta"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing stale url"))?;
+        let mut slack_entity = entity();
+        slack_entity.title = Some("Celal (DM) - Lean Scale - Slack".to_string());
+        slack_entity.url = Some("https://app.slack.com/client/TF7GEHYHZ/dms".to_string());
+        let slack = UsageSession::from_entity(
+            &slack_entity,
+            start + TimeDelta::try_seconds(50).ok_or_else(|| anyhow::anyhow!("missing delta"))?,
+            start + TimeDelta::try_seconds(60).ok_or_else(|| anyhow::anyhow!("missing delta"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing slack"))?;
+
+        for session in [&otto, &cmux, &stale_title, &mail, &stale_url, &slack] {
+            store.append_session(session)?;
+        }
+
+        let dry_run = store.repair_context(true)?;
+        let report = store.repair_context(false)?;
+        let second_report = store.repair_context(false)?;
+        let sessions = store.load_sessions()?;
+        let audit = audit_sessions(&sessions, 30.0);
+
+        assert_eq!(dry_run.mismatches_found, 2);
+        assert_eq!(dry_run.repaired, 2);
+        assert_eq!(dry_run.title_repaired, 1);
+        assert_eq!(dry_run.url_repaired, 1);
+        assert_eq!(dry_run.neighbor_repaired, 1);
+        assert_eq!(dry_run.unique_observation_repaired, 1);
+        assert_eq!(report.repaired, 2);
+        assert_eq!(second_report.repaired, 0);
+        assert_eq!(audit.browser_context_mismatch_count, 0);
+        assert!(sessions.iter().any(|session| {
+            session.start_time == stale_title.start_time
+                && session.title.as_deref() == Some("Otto - Private AI accountant")
+                && session.url.as_deref() == Some("https://ottokeep.com/")
+                && session.category == "Productivity"
+        }));
+        assert!(sessions.iter().any(|session| {
+            session.start_time == stale_url.start_time
+                && session.title.as_deref() == Some("Celal (DM) - Lean Scale - Slack")
+                && session.url.as_deref() == Some("https://app.slack.com/client/TF7GEHYHZ/dms")
+                && session.category == "Communication"
+        }));
         Ok(())
     }
 

@@ -68,6 +68,8 @@ enum Command {
     RepairTitles(RepairTitlesArgs),
     /// Canonicalize safe URL repairs, such as known browser blank tabs.
     RepairUrls(RepairUrlsArgs),
+    /// Repair high-confidence browser title/URL mismatches.
+    RepairContext(RepairContextArgs),
     /// Print storage and service paths.
     Paths(OutputArgs),
     /// Print collector health, freshness, service state, and today audit.
@@ -251,6 +253,14 @@ struct RepairUrlsArgs {
     json: bool,
 }
 
+#[derive(Debug, Args)]
+struct RepairContextArgs {
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    json: bool,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ExportFormat {
     Csv,
@@ -314,6 +324,7 @@ fn run() -> Result<()> {
         Command::RepairGaps(args) => repair_gaps(&store, args),
         Command::RepairTitles(args) => repair_titles(&store, args),
         Command::RepairUrls(args) => repair_urls(&store, args),
+        Command::RepairContext(args) => repair_context(&store, args),
         Command::Paths(args) => print_paths(&store, args),
         Command::Health(args) => print_health(&store, args),
         Command::Agent(args) => print_agent(&store, args),
@@ -735,6 +746,26 @@ fn repair_urls(store: &LogStore, args: RepairUrlsArgs) -> Result<()> {
         println!("repaired: {}", report.repaired);
         println!("blank_tab_urls: {}", report.blank_tab_urls);
         println!("blank_tab_context_urls: {}", report.blank_tab_context_urls);
+        println!("dry_run: {}", yes_no(report.dry_run));
+        Ok(())
+    }
+}
+
+fn repair_context(store: &LogStore, args: RepairContextArgs) -> Result<()> {
+    let report = store.repair_context(args.dry_run)?;
+    if args.json {
+        print_json(&report)
+    } else {
+        println!("scanned: {}", report.scanned);
+        println!("mismatches_found: {}", report.mismatches_found);
+        println!("repaired: {}", report.repaired);
+        println!("title_repaired: {}", report.title_repaired);
+        println!("url_repaired: {}", report.url_repaired);
+        println!("neighbor_repaired: {}", report.neighbor_repaired);
+        println!(
+            "unique_observation_repaired: {}",
+            report.unique_observation_repaired
+        );
         println!("dry_run: {}", yes_no(report.dry_run));
         Ok(())
     }
