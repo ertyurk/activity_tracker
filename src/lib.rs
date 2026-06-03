@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -10,6 +10,7 @@ use std::time::{Duration as StdDuration, Instant};
 
 use chrono::{DateTime, Datelike, Local, LocalResult, NaiveDate, TimeDelta, TimeZone};
 use csv::Writer;
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -26,6 +27,8 @@ pub enum TrackerError {
     Csv(#[from] csv::Error),
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("SQLite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
     #[error("invalid JSONL record in {path} at line {line}: {source}")]
     JsonLine {
         path: PathBuf,
@@ -34,6 +37,12 @@ pub enum TrackerError {
     },
     #[error("invalid date `{0}`; expected YYYY-MM-DD")]
     InvalidDate(String),
+    #[error("invalid timestamp `{0}`; expected RFC3339")]
+    InvalidTimestamp(String),
+    #[error("CSV is missing required column `{0}`")]
+    MissingCsvColumn(&'static str),
+    #[error("invalid activity type `{0}`")]
+    InvalidActivityType(String),
     #[error("could not resolve local midnight for {0}")]
     InvalidLocalDay(NaiveDate),
     #[error("AppleScript failed: {0}")]
@@ -66,6 +75,18 @@ impl ActivityType {
         match self {
             Self::Active => "active",
             Self::Idle => "idle",
+        }
+    }
+}
+
+impl std::str::FromStr for ActivityType {
+    type Err = TrackerError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "" | "active" => Ok(Self::Active),
+            "idle" => Ok(Self::Idle),
+            other => Err(TrackerError::InvalidActivityType(other.to_string())),
         }
     }
 }
@@ -163,6 +184,14 @@ pub struct ActivitySummary {
     pub by_category: Vec<SummaryRow>,
     pub by_app: Vec<SummaryRow>,
     pub by_domain: Vec<SummaryRow>,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct ImportReport {
+    pub scanned: usize,
+    pub imported: usize,
+    pub skipped_duplicates: usize,
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -270,6 +299,11 @@ impl LogStore {
     }
 
     #[must_use]
+    pub fn db_path(&self) -> PathBuf {
+        self.root.join("activity.db")
+    }
+
+    #[must_use]
     pub fn sessions_path(&self) -> PathBuf {
         self.root.join("sessions.jsonl")
     }
@@ -293,48 +327,72 @@ impl LogStore {
         fs::create_dir_all(&self.root)?;
         fs::create_dir_all(self.exports_dir())?;
         fs::create_dir_all(self.logs_dir())?;
+        self.init_database()?;
+        if self.migrate_jsonl_to_db_if_needed()? {
+            self.rewrite_jsonl_mirror_from_db()?;
+        } else {
+            self.ensure_jsonl_mirror_exists()?;
+        }
         Ok(())
     }
 
     pub fn append_session(&self, session: &UsageSession) -> Result<()> {
         self.ensure_dirs()?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.sessions_path())?;
-        serde_json::to_writer(&mut file, session)?;
-        file.write_all(b"\n")?;
-        file.flush()?;
+        if self.insert_session_db(session)? {
+            self.append_session_jsonl(session)?;
+        }
         Ok(())
     }
 
     pub fn load_sessions(&self) -> Result<Vec<UsageSession>> {
+        if self.db_path().exists() {
+            return self.load_sessions_from_db();
+        }
+        if self.sessions_path().exists() {
+            return self.load_sessions_from_jsonl();
+        }
+        if self.is_default_root()
+            && let Some(path) = legacy_sessions_path()
+            && path.exists()
+        {
+            return load_jsonl_sessions_from_path(&path);
+        }
+        Ok(Vec::new())
+    }
+
+    fn load_sessions_from_jsonl(&self) -> Result<Vec<UsageSession>> {
         let path = self.sessions_path();
         if !path.exists() {
             return Ok(Vec::new());
         }
 
-        let file = File::open(&path)?;
-        let reader = BufReader::new(file);
-        let mut sessions = Vec::new();
+        load_jsonl_sessions_from_path(&path)
+    }
 
-        for (idx, line) in reader.lines().enumerate() {
-            let line = line?;
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let session = serde_json::from_str::<UsageSession>(trimmed).map_err(|source| {
-                TrackerError::JsonLine {
-                    path: path.clone(),
-                    line: idx + 1,
-                    source,
-                }
-            })?;
-            sessions.push(session);
-        }
+    fn load_sessions_from_db(&self) -> Result<Vec<UsageSession>> {
+        let conn = Connection::open(self.db_path())?;
+        let mut stmt = conn.prepare(
+            "SELECT start_time, end_time, duration_seconds, app_name, bundle_id, title, category, url, activity_type
+             FROM sessions
+             ORDER BY start_time, end_time, id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(DbSessionRow {
+                    start_time: row.get(0)?,
+                    end_time: row.get(1)?,
+                    duration_seconds: row.get(2)?,
+                    app_name: row.get(3)?,
+                    bundle_id: row.get(4)?,
+                    title: row.get(5)?,
+                    category: row.get(6)?,
+                    url: row.get(7)?,
+                    activity_type: row.get(8)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
-        Ok(sessions)
+        rows.into_iter().map(DbSessionRow::into_session).collect()
     }
 
     pub fn sessions_for_day(&self, date: NaiveDate) -> Result<Vec<UsageSession>> {
@@ -384,6 +442,165 @@ impl LogStore {
     pub fn refresh_default_csv(&self) -> Result<()> {
         let sessions = self.load_sessions()?;
         self.write_csv(&self.csv_path(), &sessions)
+    }
+
+    pub fn import_csv(&self, path: &Path, dry_run: bool) -> Result<ImportReport> {
+        let existing_sessions = self.load_sessions()?;
+        if !dry_run {
+            self.ensure_dirs()?;
+        }
+        let mut existing_keys: HashSet<_> = existing_sessions
+            .into_iter()
+            .map(|session| SessionKey::from(&session))
+            .collect();
+        let mut reader = csv::Reader::from_path(path)?;
+        let headers = reader.headers()?.clone();
+        let columns = CsvColumns::from_headers(&headers)?;
+        let mut report = ImportReport {
+            dry_run,
+            ..ImportReport::default()
+        };
+
+        for record in reader.records() {
+            let record = record?;
+            report.scanned += 1;
+            let session = columns.session_from_record(&record)?;
+            let key = SessionKey::from(&session);
+            if !existing_keys.insert(key) {
+                report.skipped_duplicates += 1;
+                continue;
+            }
+            report.imported += 1;
+            if !dry_run {
+                self.append_session(&session)?;
+            }
+        }
+
+        if !dry_run && report.imported > 0 {
+            self.refresh_default_csv()?;
+        }
+        Ok(report)
+    }
+
+    fn init_database(&self) -> Result<()> {
+        let conn = Connection::open(self.db_path())?;
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             CREATE TABLE IF NOT EXISTS sessions (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 start_time TEXT NOT NULL,
+                 end_time TEXT NOT NULL,
+                 duration_seconds REAL NOT NULL,
+                 app_name TEXT NOT NULL,
+                 bundle_id TEXT NOT NULL,
+                 title TEXT,
+                 category TEXT NOT NULL,
+                 url TEXT,
+                 activity_type TEXT NOT NULL DEFAULT 'active',
+                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+             );
+             CREATE UNIQUE INDEX IF NOT EXISTS sessions_unique_idx
+             ON sessions (
+                 start_time,
+                 end_time,
+                 app_name,
+                 bundle_id,
+                 IFNULL(title, ''),
+                 IFNULL(url, ''),
+                 activity_type
+             );",
+        )?;
+        Ok(())
+    }
+
+    fn migrate_jsonl_to_db_if_needed(&self) -> Result<bool> {
+        if self.db_session_count()? > 0 {
+            return Ok(false);
+        }
+
+        let mut migrated = false;
+        let mut jsonl_paths = vec![self.sessions_path()];
+        if self.is_default_root()
+            && let Some(path) = legacy_sessions_path()
+            && !jsonl_paths.iter().any(|existing| existing == &path)
+        {
+            jsonl_paths.push(path);
+        }
+
+        for path in jsonl_paths {
+            if !path.exists() {
+                continue;
+            }
+            for session in load_jsonl_sessions_from_path(&path)? {
+                migrated |= self.insert_session_db(&session)?;
+            }
+        }
+        Ok(migrated)
+    }
+
+    fn db_session_count(&self) -> Result<u64> {
+        let conn = Connection::open(self.db_path())?;
+        let count = conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))?;
+        Ok(count)
+    }
+
+    fn insert_session_db(&self, session: &UsageSession) -> Result<bool> {
+        let conn = Connection::open(self.db_path())?;
+        let changed = conn.execute(
+            "INSERT OR IGNORE INTO sessions
+             (start_time, end_time, duration_seconds, app_name, bundle_id, title, category, url, activity_type)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                session.start_time.to_rfc3339(),
+                session.end_time.to_rfc3339(),
+                session.duration_seconds,
+                &session.app_name,
+                &session.bundle_id,
+                &session.title,
+                &session.category,
+                &session.url,
+                session.activity_type.to_string(),
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
+    fn append_session_jsonl(&self, session: &UsageSession) -> Result<()> {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.sessions_path())?;
+        serde_json::to_writer(&mut file, session)?;
+        file.write_all(b"\n")?;
+        file.flush()?;
+        Ok(())
+    }
+
+    fn ensure_jsonl_mirror_exists(&self) -> Result<()> {
+        if self.sessions_path().exists() {
+            return Ok(());
+        }
+        self.rewrite_jsonl_mirror_from_db()
+    }
+
+    fn rewrite_jsonl_mirror_from_db(&self) -> Result<()> {
+        let sessions = self.load_sessions_from_db()?;
+        if sessions.is_empty() {
+            return Ok(());
+        }
+
+        let mut file = File::create(self.sessions_path())?;
+        for session in sessions {
+            serde_json::to_writer(&mut file, &session)?;
+            file.write_all(b"\n")?;
+        }
+        file.flush()?;
+        Ok(())
+    }
+
+    fn is_default_root(&self) -> bool {
+        default_data_dir().is_ok_and(|path| path == self.root)
     }
 }
 
@@ -462,6 +679,12 @@ pub fn filter_sessions(
 pub fn parse_date(input: &str) -> Result<NaiveDate> {
     NaiveDate::parse_from_str(input, "%Y-%m-%d")
         .map_err(|_| TrackerError::InvalidDate(input.to_string()))
+}
+
+pub fn parse_local_datetime(input: &str) -> Result<DateTime<Local>> {
+    DateTime::parse_from_rfc3339(input)
+        .map(|value| value.with_timezone(&Local))
+        .map_err(|_| TrackerError::InvalidTimestamp(input.to_string()))
 }
 
 pub fn day_bounds(date: NaiveDate) -> Result<(DateTime<Local>, DateTime<Local>)> {
@@ -935,9 +1158,19 @@ fn local_midnight(date: NaiveDate) -> Result<DateTime<Local>> {
 }
 
 fn default_data_dir() -> Result<PathBuf> {
-    dirs::data_local_dir()
-        .map(|path| path.join("activity_tracker"))
-        .ok_or(TrackerError::DataDirNotFound)
+    dirs::home_dir()
+        .map(|path| path.join(".activity_tracker"))
+        .ok_or(TrackerError::HomeNotFound)
+}
+
+#[must_use]
+pub fn legacy_data_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|path| path.join("activity_tracker"))
+}
+
+#[must_use]
+pub fn legacy_sessions_path() -> Option<PathBuf> {
+    legacy_data_dir().map(|path| path.join("sessions.jsonl"))
 }
 
 fn launch_agent_path() -> Result<PathBuf> {
@@ -1068,6 +1301,166 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SessionKey {
+    start_time: String,
+    end_time: String,
+    app_name: String,
+    bundle_id: String,
+    title: Option<String>,
+    url: Option<String>,
+    activity_type: ActivityType,
+}
+
+impl From<&UsageSession> for SessionKey {
+    fn from(session: &UsageSession) -> Self {
+        Self {
+            start_time: session.start_time.to_rfc3339(),
+            end_time: session.end_time.to_rfc3339(),
+            app_name: session.app_name.clone(),
+            bundle_id: session.bundle_id.clone(),
+            title: session.title.clone(),
+            url: session.url.clone(),
+            activity_type: session.activity_type,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CsvColumns {
+    start_time: usize,
+    end_time: usize,
+    duration_seconds: usize,
+    app_name: usize,
+    bundle_id: usize,
+    title: Option<usize>,
+    category: usize,
+    activity_type: Option<usize>,
+    url: usize,
+}
+
+impl CsvColumns {
+    fn from_headers(headers: &csv::StringRecord) -> Result<Self> {
+        Ok(Self {
+            start_time: required_column(headers, "Start Time")?,
+            end_time: required_column(headers, "End Time")?,
+            duration_seconds: required_column(headers, "Duration (seconds)")?,
+            app_name: required_column(headers, "App Name")?,
+            bundle_id: required_column(headers, "Bundle ID")?,
+            title: optional_column(headers, "Title"),
+            category: required_column(headers, "Category")?,
+            activity_type: optional_column(headers, "Activity Type"),
+            url: required_column(headers, "URL")?,
+        })
+    }
+
+    fn session_from_record(&self, record: &csv::StringRecord) -> Result<UsageSession> {
+        let start_time = parse_local_datetime(field(record, self.start_time))?;
+        let end_time = parse_local_datetime(field(record, self.end_time))?;
+        let duration_seconds = field(record, self.duration_seconds)
+            .parse::<f64>()
+            .ok()
+            .or_else(|| seconds_between(start_time, end_time))
+            .unwrap_or(0.0);
+        let app_name = field(record, self.app_name).to_string();
+        let bundle_id = field(record, self.bundle_id).to_string();
+        let category = non_empty_borrowed(field(record, self.category))
+            .map(str::to_string)
+            .unwrap_or_else(|| category_for(&bundle_id, &app_name));
+        let activity_type = self
+            .activity_type
+            .map_or(Ok(ActivityType::Active), |idx| field(record, idx).parse())?;
+
+        Ok(UsageSession {
+            start_time,
+            end_time,
+            duration_seconds,
+            app_name,
+            bundle_id,
+            title: self
+                .title
+                .and_then(|idx| non_empty_borrowed(field(record, idx)).map(str::to_string)),
+            category,
+            url: non_empty_borrowed(field(record, self.url)).map(str::to_string),
+            activity_type,
+        })
+    }
+}
+
+fn required_column(headers: &csv::StringRecord, name: &'static str) -> Result<usize> {
+    optional_column(headers, name).ok_or(TrackerError::MissingCsvColumn(name))
+}
+
+fn optional_column(headers: &csv::StringRecord, name: &str) -> Option<usize> {
+    headers.iter().position(|header| header == name)
+}
+
+fn field(record: &csv::StringRecord, idx: usize) -> &str {
+    record.get(idx).unwrap_or("")
+}
+
+fn non_empty_borrowed(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DbSessionRow {
+    start_time: String,
+    end_time: String,
+    duration_seconds: f64,
+    app_name: String,
+    bundle_id: String,
+    title: Option<String>,
+    category: String,
+    url: Option<String>,
+    activity_type: String,
+}
+
+impl DbSessionRow {
+    fn into_session(self) -> Result<UsageSession> {
+        Ok(UsageSession {
+            start_time: parse_local_datetime(&self.start_time)?,
+            end_time: parse_local_datetime(&self.end_time)?,
+            duration_seconds: self.duration_seconds,
+            app_name: self.app_name,
+            bundle_id: self.bundle_id,
+            title: self.title,
+            category: self.category,
+            url: self.url,
+            activity_type: self.activity_type.parse()?,
+        })
+    }
+}
+
+fn load_jsonl_sessions_from_path(path: &Path) -> Result<Vec<UsageSession>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut sessions = Vec::new();
+
+    for (idx, line) in reader.lines().enumerate() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let session = serde_json::from_str::<UsageSession>(trimmed).map_err(|source| {
+            TrackerError::JsonLine {
+                path: path.to_path_buf(),
+                line: idx + 1,
+                source,
+            }
+        })?;
+        sessions.push(session);
+    }
+
+    Ok(sessions)
+}
+
 fn output_with_timeout(command: &mut Command, timeout: StdDuration, label: &str) -> Result<Output> {
     let mut child = command
         .stdout(Stdio::piped())
@@ -1143,6 +1536,7 @@ mod tests {
         store.append_session(&session)?;
 
         let all = store.load_sessions()?;
+        assert!(store.db_path().exists());
         assert_eq!(all.len(), 1);
         assert_eq!(store.sessions_for_day(parse_date("2026-06-03")?)?.len(), 1);
         assert_eq!(store.sessions_for_day(parse_date("2026-06-04")?)?.len(), 1);
@@ -1150,10 +1544,84 @@ mod tests {
     }
 
     #[test]
+    fn ensure_dirs_backfills_missing_jsonl_mirror_from_db() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let end = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing end"))?;
+        let session = UsageSession::from_entity(&entity(), start, end)
+            .ok_or_else(|| anyhow::anyhow!("missing session"))?;
+
+        store.append_session(&session)?;
+        fs::remove_file(store.sessions_path())?;
+        store.ensure_dirs()?;
+
+        let mirrored = load_jsonl_sessions_from_path(&store.sessions_path())?;
+        assert_eq!(mirrored.len(), 1);
+        assert_eq!(
+            mirrored.first().map(|session| &session.app_name),
+            Some(&session.app_name)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn imports_legacy_csv_and_skips_duplicates() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().join("store"));
+        let csv_path = dir.path().join("legacy.csv");
+        fs::write(
+            &csv_path,
+            "Start Time,End Time,Duration (seconds),App Name,Bundle ID,Category,URL\n\
+2026-06-03T08:00:00+02:00,2026-06-03T08:01:00+02:00,60.000,Dia,company.thebrowser.dia,Browser,https://example.com/\n",
+        )?;
+
+        let first = store.import_csv(&csv_path, false)?;
+        let second = store.import_csv(&csv_path, false)?;
+        let sessions = store.load_sessions()?;
+
+        assert_eq!(first.scanned, 1);
+        assert_eq!(first.imported, 1);
+        assert_eq!(second.imported, 0);
+        assert_eq!(second.skipped_duplicates, 1);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions.first().and_then(|s| s.title.as_deref()), None);
+        assert_eq!(
+            sessions.first().map(|s| s.activity_type),
+            Some(ActivityType::Active)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn import_csv_dry_run_does_not_write() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().join("store"));
+        let csv_path = dir.path().join("new.csv");
+        fs::write(
+            &csv_path,
+            "Start Time,End Time,Duration (seconds),App Name,Bundle ID,Title,Category,Activity Type,URL\n\
+2026-06-03T08:00:00+02:00,2026-06-03T08:01:00+02:00,60.000,Idle,local.activity_tracker.idle,,Idle,idle,\n",
+        )?;
+
+        let report = store.import_csv(&csv_path, true)?;
+
+        assert_eq!(report.scanned, 1);
+        assert_eq!(report.imported, 1);
+        assert!(!store.sessions_path().exists());
+        Ok(())
+    }
+
+    #[test]
     fn old_jsonl_records_default_to_active_activity_type() -> AnyhowResult<()> {
         let dir = tempfile::tempdir()?;
         let store = LogStore::new(dir.path().to_path_buf());
-        store.ensure_dirs()?;
         fs::write(
             store.sessions_path(),
             r#"{"start_time":"2026-06-03T08:00:00+02:00","end_time":"2026-06-03T08:01:00+02:00","duration_seconds":60.0,"app_name":"Dia","bundle_id":"company.thebrowser.dia","category":"Browser","url":null}"#,

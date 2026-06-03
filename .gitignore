@@ -4,3 +4,6 @@ usage_stats.csv
 exports/
 logs/
 *.plist
+activity.db
+*.db-wal
+*.db-shm

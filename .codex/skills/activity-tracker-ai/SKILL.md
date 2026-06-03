@@ -7,7 +7,7 @@ description: "Use when Codex needs to query, operate, or improve this local macO
 
 ## Overview
 
-Use this skill to work with `activity_tracker`, a local-first macOS app that records active app/browser sessions and exposes queryable logs for AI agents. Treat `sessions.jsonl` as source of truth and CLI JSON output as preferred agent interface.
+Use this skill to work with `activity_tracker`, a local-first macOS service substrate that records active app/browser sessions and exposes queryable logs for AI agents and a future SwiftUI app. Treat `~/.activity_tracker/activity.db` as source of truth, JSONL as mirror/fallback, and CLI JSON output as preferred agent interface.
 
 ## Query Workflow
 
@@ -16,6 +16,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS app that rec
 3. Use `cargo run -- logs YYYY-MM-DD --json` for raw sessions.
 4. Narrow logs with `--app`, `--title`, `--category`, `--domain`, `--activity-type active|idle`, and `--limit`.
 5. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
+6. Import old CSV with `cargo run -- import-csv PATH --dry-run --json`, then rerun without `--dry-run`.
 
 ## Operations
 
@@ -24,11 +25,12 @@ Use this skill to work with `activity_tracker`, a local-first macOS app that rec
 - Background install: `cargo run --release -- service install`
 - Background status: `cargo run -- service status`
 - Background remove: `cargo run -- service uninstall`
+- CSV import: `cargo run -- import-csv ~/Desktop/usage_stats.csv --json`
 
 ## Implementation Rules
 
 - Keep storage/query code testable without macOS permissions.
-- Append each completed session immediately to JSONL; CSV is derived.
+- Persist each completed session immediately to SQLite and mirror it to JSONL; CSV is derived.
 - Record idle as `activity_type: "idle"` with `bundle_id: "local.activity_tracker.idle"` once HID idle time crosses threshold.
 - Day math must include overlapping sessions and clip summary duration to local day bounds.
 - Add `--json` for new read commands so AI tools can consume them.

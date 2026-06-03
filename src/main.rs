@@ -9,8 +9,8 @@ use std::time::Duration;
 use activity_tracker::{
     ActivityProbe, DEFAULT_IDLE_THRESHOLD_SECONDS, DEFAULT_INTERVAL_SECONDS, LogStore, MacOsProbe,
     Result, TrackerError, TrackerState, UsageSession, filter_sessions, format_seconds,
-    install_launch_agent, parse_date, service_status, summarize_all, summarize_day,
-    uninstall_launch_agent,
+    install_launch_agent, legacy_data_dir, legacy_sessions_path, parse_date, service_status,
+    summarize_all, summarize_day, uninstall_launch_agent,
 };
 use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -42,6 +42,8 @@ enum Command {
     Summary(OutputArgs),
     /// Export sessions to CSV or JSONL.
     Export(ExportArgs),
+    /// Import legacy/exported CSV into JSONL with duplicate skipping.
+    ImportCsv(ImportCsvArgs),
     /// Print storage and service paths.
     Paths(OutputArgs),
     /// Check macOS permissions, probes, and writable storage.
@@ -102,6 +104,15 @@ struct ExportArgs {
     output: Option<PathBuf>,
 }
 
+#[derive(Debug, Args)]
+struct ImportCsvArgs {
+    path: PathBuf,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    json: bool,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ExportFormat {
     Csv,
@@ -156,6 +167,7 @@ fn run() -> Result<()> {
         Command::Logs(args) => print_logs(&store, args),
         Command::Summary(args) => print_summary(&store, args),
         Command::Export(args) => export_sessions(&store, args),
+        Command::ImportCsv(args) => import_csv(&store, args),
         Command::Paths(args) => print_paths(&store, args),
         Command::Doctor(args) => doctor(&store, args),
         Command::Service(command) => run_service(&store, command),
@@ -299,22 +311,45 @@ fn export_sessions(store: &LogStore, args: ExportArgs) -> Result<()> {
     Ok(())
 }
 
+fn import_csv(store: &LogStore, args: ImportCsvArgs) -> Result<()> {
+    let report = store.import_csv(&args.path, args.dry_run)?;
+    if args.json {
+        print_json(&report)
+    } else {
+        println!("scanned: {}", report.scanned);
+        println!("imported: {}", report.imported);
+        println!("skipped_duplicates: {}", report.skipped_duplicates);
+        println!("dry_run: {}", yes_no(report.dry_run));
+        Ok(())
+    }
+}
+
 fn print_paths(store: &LogStore, args: OutputArgs) -> Result<()> {
     if args.json {
         let value = serde_json::json!({
             "root": store.root(),
+            "sqlite": store.db_path(),
             "sessions_jsonl": store.sessions_path(),
             "csv": store.csv_path(),
             "exports": store.exports_dir(),
             "logs": store.logs_dir(),
+            "legacy_root": legacy_data_dir(),
+            "legacy_sessions_jsonl": legacy_sessions_path(),
         });
         print_json(&value)
     } else {
         println!("root: {}", store.root().display());
+        println!("sqlite: {}", store.db_path().display());
         println!("sessions_jsonl: {}", store.sessions_path().display());
         println!("csv: {}", store.csv_path().display());
         println!("exports: {}", store.exports_dir().display());
         println!("logs: {}", store.logs_dir().display());
+        if let Some(path) = legacy_data_dir() {
+            println!("legacy_root: {}", path.display());
+        }
+        if let Some(path) = legacy_sessions_path() {
+            println!("legacy_sessions_jsonl: {}", path.display());
+        }
         Ok(())
     }
 }
@@ -337,7 +372,9 @@ fn doctor(store: &LogStore, args: OutputArgs) -> Result<()> {
             "osascript": osascript,
             "active_entity": active,
             "idle_seconds": idle_seconds,
+            "sqlite": store.db_path(),
             "sessions_path": store.sessions_path(),
+            "legacy_sessions_path": legacy_sessions_path(),
         });
         print_json(&value)
     } else {
