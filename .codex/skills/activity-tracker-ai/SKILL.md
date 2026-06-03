@@ -14,7 +14,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS app that rec
 1. Run `cargo run -- paths --json` to discover storage paths.
 2. Use `cargo run -- day YYYY-MM-DD --json` for daily summaries.
 3. Use `cargo run -- logs YYYY-MM-DD --json` for raw sessions.
-4. Narrow logs with `--app`, `--category`, `--domain`, `--activity-type active|idle`, and `--limit`.
+4. Narrow logs with `--app`, `--title`, `--category`, `--domain`, `--activity-type active|idle`, and `--limit`.
 5. Export with `cargo run -- export --date YYYY-MM-DD --format csv|jsonl`.
 
 ## Operations
@@ -37,4 +37,4 @@ Use this skill to work with `activity_tracker`, a local-first macOS app that rec
 
 ## Data Contract
 
-Each JSONL record is one completed session with `start_time`, `end_time`, `duration_seconds`, `app_name`, `bundle_id`, `category`, `activity_type`, and optional `url`. Missing `activity_type` in old records defaults to `active`. Prefer CLI reads over manually parsing files unless debugging storage.
+Each JSONL record is one completed session with `start_time`, `end_time`, `duration_seconds`, `app_name`, `bundle_id`, optional `title`, `category`, `activity_type`, and optional `url`. Missing `activity_type` in old records defaults to `active`; missing `title` defaults to null. Prefer CLI reads over manually parsing files unless debugging storage.

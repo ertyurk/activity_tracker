@@ -7,6 +7,7 @@ In-progress local-first macOS activity tracker for building near-perfect persona
 - Tracks active macOS app sessions with start/end timestamps and exact duration.
 - Detects idle time from macOS HID idle state and records it as `activity_type: "idle"` instead of blaming the foreground app.
 - Captures browser URL when AppleScript supports the active browser.
+- Captures active browser tab/window title when macOS reports it.
 - Stores source-of-truth logs as append-only JSONL in the user data directory.
 - Generates CSV exports for spreadsheet workflows.
 - Provides `--json` output for AI/tool callers.
@@ -47,6 +48,7 @@ activity_tracker day 2026-06-03 --json
 activity_tracker logs 2026-06-03 --json
 activity_tracker logs 2026-06-03 --domain github --json
 activity_tracker logs 2026-06-03 --app "Code" --json
+activity_tracker logs 2026-06-03 --title "project" --json
 activity_tracker logs 2026-06-03 --activity-type idle --json
 activity_tracker summary --json
 activity_tracker export --date 2026-06-03 --format csv
@@ -88,6 +90,7 @@ Each JSONL record is one completed session:
   "duration_seconds": 330.0,
   "app_name": "Google Chrome",
   "bundle_id": "com.google.Chrome",
+  "title": "Example Project",
   "category": "Browser",
   "activity_type": "active",
   "url": "https://example.com/path"

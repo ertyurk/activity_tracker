@@ -80,6 +80,8 @@ impl fmt::Display for ActivityType {
 pub struct ActiveEntity {
     pub bundle_id: String,
     pub name: String,
+    #[serde(default)]
+    pub title: Option<String>,
     pub url: Option<String>,
     pub category: String,
     #[serde(default)]
@@ -93,6 +95,8 @@ pub struct UsageSession {
     pub duration_seconds: f64,
     pub app_name: String,
     pub bundle_id: String,
+    #[serde(default)]
+    pub title: Option<String>,
     pub category: String,
     pub url: Option<String>,
     #[serde(default)]
@@ -112,6 +116,7 @@ impl UsageSession {
             duration_seconds,
             app_name: entity.name.clone(),
             bundle_id: entity.bundle_id.clone(),
+            title: entity.title.clone(),
             category: entity.category.clone(),
             url: entity.url.clone(),
             activity_type: entity.activity_type,
@@ -352,6 +357,7 @@ impl LogStore {
             "Duration (seconds)",
             "App Name",
             "Bundle ID",
+            "Title",
             "Category",
             "Activity Type",
             "URL",
@@ -364,6 +370,7 @@ impl LogStore {
                 format!("{:.3}", session.duration_seconds),
                 session.app_name.clone(),
                 session.bundle_id.clone(),
+                session.title.clone().unwrap_or_default(),
                 session.category.clone(),
                 session.activity_type.to_string(),
                 session.url.clone().unwrap_or_default(),
@@ -396,12 +403,14 @@ pub fn summarize_day(sessions: &[UsageSession], date: NaiveDate) -> Result<Activ
 pub fn filter_sessions(
     sessions: Vec<UsageSession>,
     app: Option<&str>,
+    title: Option<&str>,
     category: Option<&str>,
     domain: Option<&str>,
     activity_type: Option<&str>,
     limit: Option<usize>,
 ) -> Vec<UsageSession> {
     let app = app.map(str::to_lowercase);
+    let title = title.map(str::to_lowercase);
     let category = category.map(str::to_lowercase);
     let domain = domain.map(str::to_lowercase);
     let activity_type = activity_type.map(str::to_lowercase);
@@ -412,6 +421,14 @@ pub fn filter_sessions(
             app.as_ref().is_none_or(|needle| {
                 session.app_name.to_lowercase().contains(needle)
                     || session.bundle_id.to_lowercase().contains(needle)
+            })
+        })
+        .filter(|session| {
+            title.as_ref().is_none_or(|needle| {
+                session
+                    .title
+                    .as_deref()
+                    .is_some_and(|title| title.to_lowercase().contains(needle))
             })
         })
         .filter(|session| {
@@ -474,12 +491,15 @@ pub fn category_for(bundle_id: &str, name: &str) -> String {
         | "com.cmuxterm.app"
         | "dev.zed.Zed" => "Development",
         "com.apple.mail" | "com.microsoft.Outlook" => "Email",
+        "com.figma.Desktop" | "com.bohemiancoding.sketch3" => "Design",
         "com.microsoft.teams2"
         | "com.tinyspeck.slackmacgap"
         | "com.apple.MobileSMS"
         | "us.zoom.xos" => "Communication",
-        "com.apple.Notes" | "com.apple.TextEdit" | "com.notion.id" => "Writing",
-        "com.apple.finder" => "System",
+        "com.apple.Notes" | "com.apple.Preview" | "com.apple.TextEdit" | "com.notion.id" => {
+            "Writing"
+        }
+        "com.apple.finder" | "com.apple.systempreferences" | "com.apple.systemsettings" => "System",
         _ if name.eq_ignore_ascii_case("Finder") => "System",
         _ => "Uncategorized",
     }
@@ -491,6 +511,7 @@ pub fn idle_entity() -> ActiveEntity {
     ActiveEntity {
         bundle_id: IDLE_BUNDLE_ID.to_string(),
         name: "Idle".to_string(),
+        title: None,
         url: None,
         category: "Idle".to_string(),
         activity_type: ActivityType::Idle,
@@ -541,10 +562,16 @@ impl ActivityProbe for MacOsProbe {
             return Ok(None);
         };
         let url = browser_tab_url(&bundle_id);
+        let title = if is_browser(&bundle_id) {
+            browser_tab_title(&bundle_id)
+        } else {
+            active_window_title()
+        };
         let category = category_for(&bundle_id, &name);
         Ok(Some(ActiveEntity {
             bundle_id,
             name,
+            title,
             url,
             category,
             activity_type: ActivityType::Active,
@@ -643,6 +670,49 @@ pub fn browser_tab_url(bundle_id: &str) -> Option<String> {
         Ok(url) => Some(url),
         Err(error) => {
             tracing::debug!(bundle_id, error = %error, "browser URL probe failed");
+            None
+        }
+    }
+}
+
+pub fn browser_tab_title(bundle_id: &str) -> Option<String> {
+    if !is_browser(bundle_id) {
+        return None;
+    }
+
+    let script = if bundle_id == "com.apple.Safari" {
+        r#"tell application id "com.apple.Safari" to get name of current tab of front window"#
+            .to_string()
+    } else {
+        format!(
+            r#"tell application id "{}" to get title of active tab of front window"#,
+            escape_applescript_string(bundle_id)
+        )
+    };
+
+    match run_osascript(&script) {
+        Ok(title) => non_empty_string(title),
+        Err(error) => {
+            tracing::debug!(bundle_id, error = %error, "browser title probe failed");
+            None
+        }
+    }
+}
+
+pub fn active_window_title() -> Option<String> {
+    let script = r#"tell application "System Events"
+set frontApp to first application process whose frontmost is true
+try
+  return name of window 1 of frontApp
+on error
+  return ""
+end try
+end tell"#;
+
+    match run_osascript(script) {
+        Ok(title) => non_empty_string(title),
+        Err(error) => {
+            tracing::debug!(error = %error, "window title probe failed");
             None
         }
     }
@@ -980,6 +1050,15 @@ fn escape_applescript_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+fn non_empty_string(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 fn xml_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -1019,6 +1098,7 @@ mod tests {
         ActiveEntity {
             bundle_id: "com.google.Chrome".to_string(),
             name: "Google Chrome".to_string(),
+            title: Some("Example Project".to_string()),
             url: Some("https://www.example.com/path".to_string()),
             category: "Browser".to_string(),
             activity_type: ActivityType::Active,
@@ -1041,6 +1121,7 @@ mod tests {
 
         assert_eq!(session.duration_seconds, 330.0);
         assert_eq!(session.activity_type, ActivityType::Active);
+        assert_eq!(session.title.as_deref(), Some("Example Project"));
         Ok(())
     }
 
@@ -1106,6 +1187,37 @@ mod tests {
         assert_eq!(summary.total_seconds, 60.0);
         assert_eq!(summary.by_activity_type.len(), 1);
         Ok(())
+    }
+
+    #[test]
+    fn filters_sessions_by_title() -> AnyhowResult<()> {
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let end = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing end"))?;
+        let session = UsageSession::from_entity(&entity(), start, end)
+            .ok_or_else(|| anyhow::anyhow!("missing session"))?;
+
+        let filtered =
+            filter_sessions(vec![session], None, Some("project"), None, None, None, None);
+
+        assert_eq!(filtered.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn category_covers_observed_apps() {
+        assert_eq!(category_for("com.figma.Desktop", "Figma"), "Design");
+        assert_eq!(category_for("com.apple.Preview", "Preview"), "Writing");
+        assert_eq!(
+            category_for("com.apple.systempreferences", "System Settings"),
+            "System"
+        );
+        assert_eq!(category_for("com.cmuxterm.app", "cmux"), "Development");
     }
 
     #[test]

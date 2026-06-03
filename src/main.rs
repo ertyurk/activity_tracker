@@ -73,6 +73,8 @@ struct LogsArgs {
     #[arg(long)]
     app: Option<String>,
     #[arg(long)]
+    title: Option<String>,
+    #[arg(long)]
     category: Option<String>,
     #[arg(long)]
     domain: Option<String>,
@@ -238,6 +240,7 @@ fn print_logs(store: &LogStore, args: LogsArgs) -> Result<()> {
     let sessions = filter_sessions(
         sessions,
         args.app.as_deref(),
+        args.title.as_deref(),
         args.category.as_deref(),
         args.domain.as_deref(),
         args.activity_type.as_deref(),
@@ -250,13 +253,14 @@ fn print_logs(store: &LogStore, args: LogsArgs) -> Result<()> {
         for session in sessions {
             let url = session.url.unwrap_or_default();
             println!(
-                "{} -> {} | {} | {} | {} | {} | {}",
+                "{} -> {} | {} | {} | {} | {} | {} | {}",
                 session.start_time.format("%H:%M:%S"),
                 session.end_time.format("%H:%M:%S"),
                 format_seconds(session.duration_seconds),
                 session.activity_type,
                 session.category,
                 session.app_name,
+                session.title.unwrap_or_default(),
                 url
             );
         }
@@ -341,8 +345,11 @@ fn doctor(store: &LogStore, args: OutputArgs) -> Result<()> {
         println!("osascript: {}", yes_no(osascript));
         if let Some(entity) = active {
             println!(
-                "active_entity: {} | {} | {}",
-                entity.name, entity.bundle_id, entity.category
+                "active_entity: {} | {} | {} | {}",
+                entity.name,
+                entity.bundle_id,
+                entity.category,
+                entity.title.unwrap_or_default()
             );
         } else {
             println!("active_entity: unavailable");
