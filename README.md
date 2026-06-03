@@ -88,7 +88,7 @@ activity_tracker repair-urls --dry-run --json
 `reclassify` recomputes categories from current app and browser-domain rules, useful after improving category mappings.
 `repair-gaps` converts audited gaps in completed logs into explicit `activity_type: "untracked"` sessions so missing time stays visible instead of disappearing from totals.
 `repair-titles` backfills native-app title gaps with the app name when macOS exposes only app-level context, and repairs browser titles only when the exact URL has one unique observed title elsewhere in the log.
-`repair-urls` canonicalizes safe URL-only fixes such as known browser blank-tab URLs to `about:newtab`.
+`repair-urls` canonicalizes safe URL-only fixes such as known browser blank-tab URLs and missing URLs surrounded by blank-tab samples to `about:newtab`.
 
 No subcommand defaults to `track`, preserving the original simple run behavior.
 

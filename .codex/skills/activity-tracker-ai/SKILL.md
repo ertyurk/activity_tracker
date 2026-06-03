@@ -30,7 +30,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 17. After category rule changes, run `cargo run -- reclassify --dry-run --json`, then rerun without `--dry-run`.
 18. After auditing gaps, run `cargo run -- repair-gaps --dry-run --json`, then rerun without `--dry-run` to insert explicit untracked sessions.
 19. After improving title capture, run `cargo run -- repair-titles --dry-run --json`, then rerun without `--dry-run` to backfill native app titles and browser titles whose exact URL has one unique observed title.
-20. After improving URL normalization, run `cargo run -- repair-urls --dry-run --json`, then rerun without `--dry-run` to canonicalize safe URL-only fixes such as browser blank tabs.
+20. After improving URL normalization, run `cargo run -- repair-urls --dry-run --json`, then rerun without `--dry-run` to canonicalize safe URL-only fixes such as known or surrounded browser blank tabs.
 
 ## Operations
 
@@ -56,7 +56,7 @@ Use this skill to work with `activity_tracker`, a local-first macOS service subs
 - For browsers, collect active tab title and URL from the same AppleScript sample so rows do not mix different tab states.
 - For native apps, collect app identity and title fallback from the same foreground probe sample: window title first, then app title/name when macOS exposes no window.
 - Use `repair-titles` to backfill native app title gaps and exact-URL browser title gaps after title capture changes; do not mask browser misses with synthetic titles.
-- Use `repair-urls` to canonicalize known blank-tab URLs; do not infer missing browser URLs from surrounding sessions.
+- Use `repair-urls` to canonicalize known or blank-tab-surrounded URLs; do not infer ordinary missing browser URLs from surrounding sessions.
 - Preserve current session through short active-app probe misses; only create gaps after repeated misses.
 - Canonicalize known browser blank tabs as `about:newtab` and keep them separate from actionable missing-URL audit rows.
 - Record idle as `activity_type: "idle"` with `bundle_id: "local.activity_tracker.idle"` once HID idle time crosses threshold.

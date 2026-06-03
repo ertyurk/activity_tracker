@@ -722,6 +722,7 @@ fn repair_urls(store: &LogStore, args: RepairUrlsArgs) -> Result<()> {
         println!("scanned: {}", report.scanned);
         println!("repaired: {}", report.repaired);
         println!("blank_tab_urls: {}", report.blank_tab_urls);
+        println!("blank_tab_context_urls: {}", report.blank_tab_context_urls);
         println!("dry_run: {}", yes_no(report.dry_run));
         Ok(())
     }

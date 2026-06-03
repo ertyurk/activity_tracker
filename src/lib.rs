@@ -356,6 +356,7 @@ pub struct RepairUrlsReport {
     pub scanned: usize,
     pub repaired: usize,
     pub blank_tab_urls: usize,
+    pub blank_tab_context_urls: usize,
     pub dry_run: bool,
 }
 
@@ -945,18 +946,21 @@ impl LogStore {
             ..RepairUrlsReport::default()
         };
 
-        for session in sessions {
+        for (index, session) in sessions.iter().enumerate() {
             report.scanned += 1;
-            let Some(url) = repaired_url_for_session(&session) else {
+            let previous = index.checked_sub(1).and_then(|index| sessions.get(index));
+            let next = sessions.get(index + 1);
+            let Some(repair) = repaired_url_for_session(session, previous, next) else {
                 continue;
             };
 
             report.repaired += 1;
-            if url == BROWSER_NEW_TAB_URL {
-                report.blank_tab_urls += 1;
+            match repair.source {
+                UrlRepairSource::BlankTabUrl => report.blank_tab_urls += 1,
+                UrlRepairSource::BlankTabContext => report.blank_tab_context_urls += 1,
             }
             if !dry_run {
-                self.update_session_url(&session, &url)?;
+                self.update_session_url(session, &repair.url)?;
             }
         }
 
@@ -2440,14 +2444,42 @@ fn browser_missing_url(session: &UsageSession) -> bool {
             .is_none_or(|url| url.trim().is_empty())
 }
 
-fn repaired_url_for_session(session: &UsageSession) -> Option<String> {
+#[derive(Debug, Clone)]
+struct UrlRepair {
+    url: String,
+    source: UrlRepairSource,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum UrlRepairSource {
+    BlankTabUrl,
+    BlankTabContext,
+}
+
+fn repaired_url_for_session(
+    session: &UsageSession,
+    previous: Option<&UsageSession>,
+    next: Option<&UsageSession>,
+) -> Option<UrlRepair> {
     if session.activity_type != ActivityType::Active || !is_browser(&session.bundle_id) {
         return None;
     }
 
-    let url = session.url.as_deref()?;
-    (is_browser_blank_tab_url(url) && url.trim() != BROWSER_NEW_TAB_URL)
-        .then(|| BROWSER_NEW_TAB_URL.to_string())
+    if let Some(url) = session.url.as_deref() {
+        return (is_browser_blank_tab_url(url) && url.trim() != BROWSER_NEW_TAB_URL).then(|| {
+            UrlRepair {
+                url: BROWSER_NEW_TAB_URL.to_string(),
+                source: UrlRepairSource::BlankTabUrl,
+            }
+        });
+    }
+
+    let previous_blank = previous.is_some_and(browser_blank_tab);
+    let next_blank = next.is_some_and(browser_blank_tab);
+    (previous_blank && next_blank).then(|| UrlRepair {
+        url: BROWSER_NEW_TAB_URL.to_string(),
+        source: UrlRepairSource::BlankTabContext,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -3656,8 +3688,10 @@ mod tests {
 
         assert_eq!(dry_run.repaired, 1);
         assert_eq!(dry_run.blank_tab_urls, 1);
+        assert_eq!(dry_run.blank_tab_context_urls, 0);
         assert_eq!(report.repaired, 1);
         assert_eq!(report.blank_tab_urls, 1);
+        assert_eq!(report.blank_tab_context_urls, 0);
         assert_eq!(second_report.repaired, 0);
         assert!(sessions.iter().any(
             |session| session.url.as_deref() == Some(BROWSER_NEW_TAB_URL)
@@ -3666,6 +3700,55 @@ mod tests {
         assert!(sessions.iter().any(|session| session.url.as_deref()
             == Some("https://example.com/path")
             && session.title.as_deref() == Some("Example Project")));
+        Ok(())
+    }
+
+    #[test]
+    fn repair_urls_marks_missing_url_between_blank_tabs() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 10, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let mut first_blank = UsageSession::from_entity(
+            &entity(),
+            start,
+            start + TimeDelta::try_seconds(60).ok_or_else(|| anyhow::anyhow!("missing delta"))?,
+        )
+        .ok_or_else(|| anyhow::anyhow!("missing first blank"))?;
+        first_blank.title = Some("New Tab".to_string());
+        first_blank.url = Some(BROWSER_NEW_TAB_URL.to_string());
+        let mut missing_context = first_blank.clone();
+        missing_context.start_time =
+            start + TimeDelta::try_seconds(60).ok_or_else(|| anyhow::anyhow!("missing delta"))?;
+        missing_context.end_time =
+            start + TimeDelta::try_seconds(120).ok_or_else(|| anyhow::anyhow!("missing delta"))?;
+        missing_context.title = None;
+        missing_context.url = None;
+        let mut second_blank = first_blank.clone();
+        second_blank.start_time =
+            start + TimeDelta::try_seconds(120).ok_or_else(|| anyhow::anyhow!("missing delta"))?;
+        second_blank.end_time =
+            start + TimeDelta::try_seconds(180).ok_or_else(|| anyhow::anyhow!("missing delta"))?;
+
+        store.append_session(&first_blank)?;
+        store.append_session(&missing_context)?;
+        store.append_session(&second_blank)?;
+        let dry_run = store.repair_urls(true)?;
+        let report = store.repair_urls(false)?;
+        let sessions = store.load_sessions()?;
+
+        assert_eq!(dry_run.repaired, 1);
+        assert_eq!(dry_run.blank_tab_urls, 0);
+        assert_eq!(dry_run.blank_tab_context_urls, 1);
+        assert_eq!(report.repaired, 1);
+        assert_eq!(report.blank_tab_context_urls, 1);
+        assert_eq!(audit_sessions(&sessions, 30.0).missing_title_count, 0);
+        assert!(sessions.iter().any(
+            |session| session.url.as_deref() == Some(BROWSER_NEW_TAB_URL)
+                && session.title.is_none()
+        ));
         Ok(())
     }
 
