@@ -7,9 +7,10 @@ use std::thread;
 use std::time::Duration;
 
 use activity_tracker::{
-    ActivityProbe, DEFAULT_INTERVAL_SECONDS, LogStore, MacOsProbe, Result, TrackerError,
-    UsageSession, filter_sessions, format_seconds, install_launch_agent, parse_date,
-    service_status, summarize_all, summarize_day, uninstall_launch_agent,
+    ActivityProbe, DEFAULT_IDLE_THRESHOLD_SECONDS, DEFAULT_INTERVAL_SECONDS, LogStore, MacOsProbe,
+    Result, TrackerError, TrackerState, UsageSession, filter_sessions, format_seconds,
+    install_launch_agent, parse_date, service_status, summarize_all, summarize_day,
+    uninstall_launch_agent,
 };
 use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -53,6 +54,8 @@ enum Command {
 struct TrackArgs {
     #[arg(long, default_value_t = DEFAULT_INTERVAL_SECONDS)]
     interval_seconds: u64,
+    #[arg(long, default_value_t = DEFAULT_IDLE_THRESHOLD_SECONDS)]
+    idle_threshold_seconds: u64,
     #[arg(long)]
     quiet: bool,
 }
@@ -73,6 +76,8 @@ struct LogsArgs {
     category: Option<String>,
     #[arg(long)]
     domain: Option<String>,
+    #[arg(long)]
+    activity_type: Option<String>,
     #[arg(long)]
     limit: Option<usize>,
     #[arg(long)]
@@ -166,8 +171,11 @@ fn run_tracker(store: &LogStore, args: TrackArgs) -> Result<()> {
     store.ensure_dirs()?;
     let probe = MacOsProbe;
     let interval = Duration::from_secs(args.interval_seconds.max(1));
-    let mut current_entity = probe.active_entity()?;
-    let mut session_start = Local::now();
+    let mut state = TrackerState::new(
+        observed_entity(&probe, args.idle_threshold_seconds)?,
+        Local::now(),
+        args.idle_threshold_seconds,
+    );
 
     if !args.quiet {
         println!("tracking -> {}", store.sessions_path().display());
@@ -175,40 +183,23 @@ fn run_tracker(store: &LogStore, args: TrackArgs) -> Result<()> {
 
     while running.load(Ordering::SeqCst) {
         thread::sleep(interval);
-        let next_entity = match probe.active_entity() {
-            Ok(entity) => entity,
-            Err(error) => {
-                tracing::warn!(error = %error, "probe failed");
-                None
-            }
-        };
+        let next_entity = active_entity_or_none(&probe);
+        let idle_seconds = idle_seconds_or_none(&probe);
         let now = Local::now();
 
-        if next_entity != current_entity {
-            persist_session(
-                store,
-                current_entity.as_ref(),
-                session_start,
-                now,
-                args.quiet,
-            )?;
-            current_entity = next_entity;
-            session_start = now;
+        if let Some(session) = state.apply_sample(next_entity, idle_seconds, now) {
+            persist_session(store, session, args.quiet)?;
             if !args.quiet
-                && let Some(entity) = current_entity.as_ref()
+                && let Some(entity) = state.current_entity()
             {
                 println!("active -> {} [{}]", entity.name, entity.category);
             }
         }
     }
 
-    persist_session(
-        store,
-        current_entity.as_ref(),
-        session_start,
-        Local::now(),
-        args.quiet,
-    )?;
+    if let Some(session) = state.finish(Local::now()) {
+        persist_session(store, session, args.quiet)?;
+    }
     store.refresh_default_csv()?;
     if !args.quiet {
         println!("stopped");
@@ -216,25 +207,14 @@ fn run_tracker(store: &LogStore, args: TrackArgs) -> Result<()> {
     Ok(())
 }
 
-fn persist_session(
-    store: &LogStore,
-    entity: Option<&activity_tracker::ActiveEntity>,
-    start: chrono::DateTime<Local>,
-    end: chrono::DateTime<Local>,
-    quiet: bool,
-) -> Result<()> {
-    let Some(entity) = entity else {
-        return Ok(());
-    };
-    let Some(session) = UsageSession::from_entity(entity, start, end) else {
-        return Ok(());
-    };
+fn persist_session(store: &LogStore, session: UsageSession, quiet: bool) -> Result<()> {
     store.append_session(&session)?;
     if !quiet {
         println!(
-            "saved -> {} {}",
+            "saved -> {} {} [{}]",
             session.app_name,
-            format_seconds(session.duration_seconds)
+            format_seconds(session.duration_seconds),
+            session.activity_type
         );
     }
     Ok(())
@@ -260,6 +240,7 @@ fn print_logs(store: &LogStore, args: LogsArgs) -> Result<()> {
         args.app.as_deref(),
         args.category.as_deref(),
         args.domain.as_deref(),
+        args.activity_type.as_deref(),
         args.limit,
     );
 
@@ -269,10 +250,11 @@ fn print_logs(store: &LogStore, args: LogsArgs) -> Result<()> {
         for session in sessions {
             let url = session.url.unwrap_or_default();
             println!(
-                "{} -> {} | {} | {} | {} | {}",
+                "{} -> {} | {} | {} | {} | {} | {}",
                 session.start_time.format("%H:%M:%S"),
                 session.end_time.format("%H:%M:%S"),
                 format_seconds(session.duration_seconds),
+                session.activity_type,
                 session.category,
                 session.app_name,
                 url
@@ -337,6 +319,7 @@ fn doctor(store: &LogStore, args: OutputArgs) -> Result<()> {
     store.ensure_dirs()?;
     let probe = MacOsProbe;
     let active = probe.active_entity()?;
+    let idle_seconds = probe.idle_seconds()?;
     let osascript = std::process::Command::new("osascript")
         .arg("-e")
         .arg("return \"ok\"")
@@ -349,6 +332,7 @@ fn doctor(store: &LogStore, args: OutputArgs) -> Result<()> {
             "data_dir_writable": true,
             "osascript": osascript,
             "active_entity": active,
+            "idle_seconds": idle_seconds,
             "sessions_path": store.sessions_path(),
         });
         print_json(&value)
@@ -363,6 +347,9 @@ fn doctor(store: &LogStore, args: OutputArgs) -> Result<()> {
         } else {
             println!("active_entity: unavailable");
             println!("hint: grant Accessibility permission to terminal/app running tracker");
+        }
+        if let Some(seconds) = idle_seconds {
+            println!("idle_seconds: {seconds:.1}");
         }
         Ok(())
     }
@@ -405,6 +392,7 @@ fn print_summary_text(date: Option<NaiveDate>, summary: &activity_tracker::Activ
         summary.total_seconds
     );
     print_rows("by_category", &summary.by_category);
+    print_rows("by_activity_type", &summary.by_activity_type);
     print_rows("by_app", &summary.by_app);
     print_rows("by_domain", &summary.by_domain);
 }
@@ -478,4 +466,37 @@ fn init_tracing() {
         .with_target(false)
         .compact()
         .init();
+}
+
+fn observed_entity(
+    probe: &MacOsProbe,
+    idle_threshold_seconds: u64,
+) -> Result<Option<activity_tracker::ActiveEntity>> {
+    let active = probe.active_entity()?;
+    let idle_seconds = probe.idle_seconds()?;
+    if idle_seconds.is_some_and(|seconds| seconds >= idle_threshold_seconds as f64) {
+        Ok(Some(activity_tracker::idle_entity()))
+    } else {
+        Ok(active)
+    }
+}
+
+fn active_entity_or_none(probe: &MacOsProbe) -> Option<activity_tracker::ActiveEntity> {
+    match probe.active_entity() {
+        Ok(entity) => entity,
+        Err(error) => {
+            tracing::warn!(error = %error, "active probe failed");
+            None
+        }
+    }
+}
+
+fn idle_seconds_or_none(probe: &MacOsProbe) -> Option<f64> {
+    match probe.idle_seconds() {
+        Ok(seconds) => seconds,
+        Err(error) => {
+            tracing::warn!(error = %error, "idle probe failed");
+            None
+        }
+    }
 }

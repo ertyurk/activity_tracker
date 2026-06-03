@@ -5,6 +5,7 @@ In-progress local-first macOS activity tracker for building near-perfect persona
 ## Current Shape
 
 - Tracks active macOS app sessions with start/end timestamps and exact duration.
+- Detects idle time from macOS HID idle state and records it as `activity_type: "idle"` instead of blaming the foreground app.
 - Captures browser URL when AppleScript supports the active browser.
 - Stores source-of-truth logs as append-only JSONL in the user data directory.
 - Generates CSV exports for spreadsheet workflows.
@@ -46,6 +47,7 @@ activity_tracker day 2026-06-03 --json
 activity_tracker logs 2026-06-03 --json
 activity_tracker logs 2026-06-03 --domain github --json
 activity_tracker logs 2026-06-03 --app "Code" --json
+activity_tracker logs 2026-06-03 --activity-type idle --json
 activity_tracker summary --json
 activity_tracker export --date 2026-06-03 --format csv
 activity_tracker export --date 2026-06-03 --format jsonl
@@ -87,9 +89,12 @@ Each JSONL record is one completed session:
   "app_name": "Google Chrome",
   "bundle_id": "com.google.Chrome",
   "category": "Browser",
+  "activity_type": "active",
   "url": "https://example.com/path"
 }
 ```
+
+Idle sessions use `app_name: "Idle"`, `bundle_id: "local.activity_tracker.idle"`, `category: "Idle"`, and `activity_type: "idle"`.
 
 Day summaries include sessions overlapping that local day and clip cross-midnight durations to the requested day.
 
@@ -102,6 +107,12 @@ activity_tracker service uninstall
 ```
 
 `service install` writes `~/Library/LaunchAgents/com.local.activity-tracker.plist`, loads it, and starts `activity_tracker track --quiet`.
+
+Default idle threshold is 300 seconds. Foreground runs can override it:
+
+```bash
+activity_tracker track --idle-threshold-seconds 120
+```
 
 ## Development
 

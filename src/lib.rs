@@ -1,17 +1,22 @@
 use std::collections::HashMap;
 use std::env;
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration as StdDuration, Instant};
 
-use chrono::{DateTime, Datelike, Local, LocalResult, NaiveDate, TimeZone};
+use chrono::{DateTime, Datelike, Local, LocalResult, NaiveDate, TimeDelta, TimeZone};
 use csv::Writer;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const DEFAULT_INTERVAL_SECONDS: u64 = 2;
+pub const DEFAULT_IDLE_THRESHOLD_SECONDS: u64 = 300;
 pub const SERVICE_LABEL: &str = "com.local.activity-tracker";
+pub const IDLE_BUNDLE_ID: &str = "local.activity_tracker.idle";
 
 #[derive(Debug, Error)]
 pub enum TrackerError {
@@ -35,6 +40,8 @@ pub enum TrackerError {
     AppleScript(String),
     #[error("command `{command}` failed: {stderr}")]
     Command { command: String, stderr: String },
+    #[error("command `{0}` timed out")]
+    CommandTimeout(String),
     #[error("home directory not found")]
     HomeNotFound,
     #[error("data directory not found")]
@@ -45,12 +52,38 @@ pub enum TrackerError {
 
 pub type Result<T> = std::result::Result<T, TrackerError>;
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityType {
+    #[default]
+    Active,
+    Idle,
+}
+
+impl ActivityType {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Idle => "idle",
+        }
+    }
+}
+
+impl fmt::Display for ActivityType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ActiveEntity {
     pub bundle_id: String,
     pub name: String,
     pub url: Option<String>,
     pub category: String,
+    #[serde(default)]
+    pub activity_type: ActivityType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +95,8 @@ pub struct UsageSession {
     pub bundle_id: String,
     pub category: String,
     pub url: Option<String>,
+    #[serde(default)]
+    pub activity_type: ActivityType,
 }
 
 impl UsageSession {
@@ -79,6 +114,7 @@ impl UsageSession {
             bundle_id: entity.bundle_id.clone(),
             category: entity.category.clone(),
             url: entity.url.clone(),
+            activity_type: entity.activity_type,
         })
     }
 
@@ -118,9 +154,89 @@ pub struct SummaryRow {
 pub struct ActivitySummary {
     pub session_count: usize,
     pub total_seconds: f64,
+    pub by_activity_type: Vec<SummaryRow>,
     pub by_category: Vec<SummaryRow>,
     pub by_app: Vec<SummaryRow>,
     pub by_domain: Vec<SummaryRow>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrackerState {
+    current_entity: Option<ActiveEntity>,
+    session_start: DateTime<Local>,
+    idle_threshold_seconds: u64,
+}
+
+impl TrackerState {
+    #[must_use]
+    pub fn new(
+        current_entity: Option<ActiveEntity>,
+        session_start: DateTime<Local>,
+        idle_threshold_seconds: u64,
+    ) -> Self {
+        Self {
+            current_entity,
+            session_start,
+            idle_threshold_seconds,
+        }
+    }
+
+    #[must_use]
+    pub fn current_entity(&self) -> Option<&ActiveEntity> {
+        self.current_entity.as_ref()
+    }
+
+    #[must_use]
+    pub const fn session_start(&self) -> DateTime<Local> {
+        self.session_start
+    }
+
+    #[must_use]
+    pub fn apply_sample(
+        &mut self,
+        entity: Option<ActiveEntity>,
+        idle_seconds: Option<f64>,
+        observed_at: DateTime<Local>,
+    ) -> Option<UsageSession> {
+        let idle_started_at = idle_start(observed_at, idle_seconds, self.idle_threshold_seconds);
+        let desired_entity = if idle_started_at.is_some() {
+            Some(idle_entity())
+        } else {
+            entity
+        };
+
+        if desired_entity == self.current_entity {
+            return None;
+        }
+
+        let previous = self.current_entity.as_ref();
+        let switching_to_idle = desired_entity
+            .as_ref()
+            .is_some_and(|entity| entity.activity_type == ActivityType::Idle)
+            && previous.is_some_and(|entity| entity.activity_type != ActivityType::Idle);
+        let end_time = if switching_to_idle {
+            max_datetime(self.session_start, idle_started_at.unwrap_or(observed_at))
+        } else {
+            observed_at
+        };
+
+        let completed = previous
+            .and_then(|entity| UsageSession::from_entity(entity, self.session_start, end_time));
+        self.current_entity = desired_entity;
+        self.session_start = if completed.is_some() {
+            end_time
+        } else {
+            observed_at
+        };
+        completed
+    }
+
+    #[must_use]
+    pub fn finish(&self, end_time: DateTime<Local>) -> Option<UsageSession> {
+        self.current_entity
+            .as_ref()
+            .and_then(|entity| UsageSession::from_entity(entity, self.session_start, end_time))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -237,6 +353,7 @@ impl LogStore {
             "App Name",
             "Bundle ID",
             "Category",
+            "Activity Type",
             "URL",
         ])?;
 
@@ -248,6 +365,7 @@ impl LogStore {
                 session.app_name.clone(),
                 session.bundle_id.clone(),
                 session.category.clone(),
+                session.activity_type.to_string(),
                 session.url.clone().unwrap_or_default(),
             ])?;
         }
@@ -280,11 +398,13 @@ pub fn filter_sessions(
     app: Option<&str>,
     category: Option<&str>,
     domain: Option<&str>,
+    activity_type: Option<&str>,
     limit: Option<usize>,
 ) -> Vec<UsageSession> {
     let app = app.map(str::to_lowercase);
     let category = category.map(str::to_lowercase);
     let domain = domain.map(str::to_lowercase);
+    let activity_type = activity_type.map(str::to_lowercase);
 
     let mut filtered: Vec<_> = sessions
         .into_iter()
@@ -307,6 +427,11 @@ pub fn filter_sessions(
                     .and_then(domain_from_url)
                     .is_some_and(|host| host.contains(needle))
             })
+        })
+        .filter(|session| {
+            activity_type
+                .as_ref()
+                .is_none_or(|needle| session.activity_type.as_str().contains(needle))
         })
         .collect();
 
@@ -343,7 +468,10 @@ pub fn category_for(bundle_id: &str, name: &str) -> String {
         "com.apple.Terminal" | "com.googlecode.iterm2" => "Terminal",
         "com.apple.dt.Xcode"
         | "com.microsoft.VSCode"
+        | "com.mitchellh.ghostty"
+        | "com.warp.dev"
         | "com.todesktop.230313mzl4w4u92"
+        | "com.cmuxterm.app"
         | "dev.zed.Zed" => "Development",
         "com.apple.mail" | "com.microsoft.Outlook" => "Email",
         "com.microsoft.teams2"
@@ -356,6 +484,17 @@ pub fn category_for(bundle_id: &str, name: &str) -> String {
         _ => "Uncategorized",
     }
     .to_string()
+}
+
+#[must_use]
+pub fn idle_entity() -> ActiveEntity {
+    ActiveEntity {
+        bundle_id: IDLE_BUNDLE_ID.to_string(),
+        name: "Idle".to_string(),
+        url: None,
+        category: "Idle".to_string(),
+        activity_type: ActivityType::Idle,
+    }
 }
 
 #[must_use]
@@ -387,6 +526,10 @@ pub fn domain_from_url(url: &str) -> Option<String> {
 
 pub trait ActivityProbe {
     fn active_entity(&self) -> Result<Option<ActiveEntity>>;
+
+    fn idle_seconds(&self) -> Result<Option<f64>> {
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -404,7 +547,12 @@ impl ActivityProbe for MacOsProbe {
             name,
             url,
             category,
+            activity_type: ActivityType::Active,
         }))
+    }
+
+    fn idle_seconds(&self) -> Result<Option<f64>> {
+        hid_idle_seconds()
     }
 }
 
@@ -423,7 +571,11 @@ pub fn is_browser(bundle_id: &str) -> bool {
 }
 
 pub fn run_osascript(script: &str) -> Result<String> {
-    let output = Command::new("osascript").arg("-e").arg(script).output()?;
+    let output = output_with_timeout(
+        Command::new("osascript").arg("-e").arg(script),
+        StdDuration::from_secs(2),
+        "osascript",
+    )?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(TrackerError::AppleScript(stderr));
@@ -494,6 +646,27 @@ pub fn browser_tab_url(bundle_id: &str) -> Option<String> {
             None
         }
     }
+}
+
+pub fn hid_idle_seconds() -> Result<Option<f64>> {
+    let output = output_with_timeout(
+        Command::new("ioreg").args(["-c", "IOHIDSystem", "-r", "-d", "1"]),
+        StdDuration::from_secs(2),
+        "ioreg",
+    )?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_hid_idle_nanoseconds(&stdout).map(|nanos| nanos as f64 / 1_000_000_000.0))
+}
+
+#[must_use]
+pub fn parse_hid_idle_nanoseconds(output: &str) -> Option<u64> {
+    output.lines().find_map(|line| {
+        let (_, raw_value) = line.split_once("\"HIDIdleTime\" = ")?;
+        raw_value.trim().parse::<u64>().ok()
+    })
 }
 
 pub fn install_launch_agent(binary: &Path, store: &LogStore, load: bool) -> Result<PathBuf> {
@@ -596,6 +769,7 @@ where
     F: Fn(&UsageSession) -> f64,
 {
     let mut total_seconds = 0.0;
+    let mut by_activity_type = HashMap::<String, f64>::new();
     let mut by_category = HashMap::<String, f64>::new();
     let mut by_app = HashMap::<String, f64>::new();
     let mut by_domain = HashMap::<String, f64>::new();
@@ -606,6 +780,9 @@ where
             continue;
         }
         total_seconds += seconds;
+        *by_activity_type
+            .entry(session.activity_type.to_string())
+            .or_default() += seconds;
         *by_category.entry(session.category.clone()).or_default() += seconds;
         *by_app
             .entry(format!("{} ({})", session.app_name, session.bundle_id))
@@ -618,6 +795,7 @@ where
     ActivitySummary {
         session_count: sessions.len(),
         total_seconds,
+        by_activity_type: sorted_rows(by_activity_type, total_seconds),
         by_category: sorted_rows(by_category, total_seconds),
         by_app: sorted_rows(by_app, total_seconds),
         by_domain: sorted_rows(by_domain, total_seconds),
@@ -653,6 +831,23 @@ fn seconds_between(start_time: DateTime<Local>, end_time: DateTime<Local>) -> Op
         .signed_duration_since(start_time)
         .num_milliseconds();
     Some(millis as f64 / 1_000.0)
+}
+
+fn idle_start(
+    observed_at: DateTime<Local>,
+    idle_seconds: Option<f64>,
+    threshold_seconds: u64,
+) -> Option<DateTime<Local>> {
+    let idle_seconds = idle_seconds?;
+    if idle_seconds < threshold_seconds as f64 {
+        return None;
+    }
+    let bounded = idle_seconds.floor().clamp(0.0, i64::MAX as f64) as i64;
+    Some(observed_at - TimeDelta::seconds(bounded))
+}
+
+fn max_datetime(a: DateTime<Local>, b: DateTime<Local>) -> DateTime<Local> {
+    if a >= b { a } else { b }
 }
 
 fn local_midnight(date: NaiveDate) -> Result<DateTime<Local>> {
@@ -765,6 +960,26 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+fn output_with_timeout(command: &mut Command, timeout: StdDuration, label: &str) -> Result<Output> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let started = Instant::now();
+
+    loop {
+        if child.try_wait()?.is_some() {
+            return Ok(child.wait_with_output()?);
+        }
+        if started.elapsed() >= timeout {
+            let _kill_result = child.kill();
+            let _wait_result = child.wait();
+            return Err(TrackerError::CommandTimeout(label.to_string()));
+        }
+        thread::sleep(StdDuration::from_millis(20));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -777,6 +992,7 @@ mod tests {
             name: "Google Chrome".to_string(),
             url: Some("https://www.example.com/path".to_string()),
             category: "Browser".to_string(),
+            activity_type: ActivityType::Active,
         }
     }
 
@@ -795,6 +1011,7 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("missing session"))?;
 
         assert_eq!(session.duration_seconds, 330.0);
+        assert_eq!(session.activity_type, ActivityType::Active);
         Ok(())
     }
 
@@ -823,6 +1040,26 @@ mod tests {
     }
 
     #[test]
+    fn old_jsonl_records_default_to_active_activity_type() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        store.ensure_dirs()?;
+        fs::write(
+            store.sessions_path(),
+            r#"{"start_time":"2026-06-03T08:00:00+02:00","end_time":"2026-06-03T08:01:00+02:00","duration_seconds":60.0,"app_name":"Dia","bundle_id":"company.thebrowser.dia","category":"Browser","url":null}"#,
+        )?;
+
+        let sessions = store.load_sessions()?;
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions.first().map(|s| s.activity_type),
+            Some(ActivityType::Active)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn day_summary_clips_cross_midnight_sessions() -> AnyhowResult<()> {
         let start = Local
             .with_ymd_and_hms(2026, 6, 3, 23, 59, 0)
@@ -838,6 +1075,7 @@ mod tests {
         let summary = summarize_day(&[session], parse_date("2026-06-03")?)?;
 
         assert_eq!(summary.total_seconds, 60.0);
+        assert_eq!(summary.by_activity_type.len(), 1);
         Ok(())
     }
 
@@ -847,6 +1085,71 @@ mod tests {
             domain_from_url("https://www.Example.com:443/a?b=c").as_deref(),
             Some("example.com")
         );
+    }
+
+    #[test]
+    fn parser_extracts_hid_idle_nanoseconds() {
+        assert_eq!(
+            parse_hid_idle_nanoseconds(r#"      "HIDIdleTime" = 8099666"#),
+            Some(8_099_666)
+        );
+    }
+
+    #[test]
+    fn tracker_state_backdates_idle_transition() -> AnyhowResult<()> {
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 10, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let sample_time = Local
+            .with_ymd_and_hms(2026, 6, 3, 10, 10, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing sample"))?;
+        let mut state = TrackerState::new(Some(entity()), start, 300);
+
+        let active_session = state
+            .apply_sample(Some(entity()), Some(300.0), sample_time)
+            .ok_or_else(|| anyhow::anyhow!("missing active session"))?;
+
+        assert_eq!(active_session.activity_type, ActivityType::Active);
+        assert_eq!(active_session.duration_seconds, 300.0);
+        assert_eq!(
+            state.current_entity().map(|entity| entity.activity_type),
+            Some(ActivityType::Idle)
+        );
+        assert_eq!(
+            state.session_start(),
+            Local
+                .with_ymd_and_hms(2026, 6, 3, 10, 5, 0)
+                .single()
+                .ok_or_else(|| anyhow::anyhow!("missing idle start"))?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn tracker_state_closes_idle_when_activity_resumes() -> AnyhowResult<()> {
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 10, 5, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let sample_time = Local
+            .with_ymd_and_hms(2026, 6, 3, 10, 6, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing sample"))?;
+        let mut state = TrackerState::new(Some(idle_entity()), start, 300);
+
+        let idle_session = state
+            .apply_sample(Some(entity()), Some(0.0), sample_time)
+            .ok_or_else(|| anyhow::anyhow!("missing idle session"))?;
+
+        assert_eq!(idle_session.activity_type, ActivityType::Idle);
+        assert_eq!(idle_session.duration_seconds, 60.0);
+        assert_eq!(
+            state.current_entity().map(|entity| entity.activity_type),
+            Some(ActivityType::Active)
+        );
+        Ok(())
     }
 
     #[test]

@@ -9,6 +9,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history app.
 - Local-only by default. Do not send activity data to network services.
 - Source of truth is append-only `sessions.jsonl`; CSV is an export/view.
 - Preserve timestamps, app name, bundle ID, category, URL when available, and exact duration.
+- Preserve `activity_type` and treat idle as first-class log data, not as foreground app time.
 - Day queries must handle cross-midnight sessions by overlap, not only start date.
 - Background mode should use `launchd` via `activity_tracker service install`.
 - CLI output should support plain text for humans and `--json` for agents.
@@ -31,6 +32,7 @@ cargo run -- doctor
 cargo run -- paths --json
 cargo run -- day 2026-06-03 --json
 cargo run -- logs 2026-06-03 --domain github --json
+cargo run -- logs 2026-06-03 --activity-type idle --json
 cargo run -- export --date 2026-06-03 --format csv
 ```
 
