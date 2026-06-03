@@ -7,10 +7,11 @@ use std::thread;
 use std::time::Duration;
 
 use activity_tracker::{
-    ActivityProbe, DEFAULT_IDLE_THRESHOLD_SECONDS, DEFAULT_INTERVAL_SECONDS, LogStore, MacOsProbe,
-    Result, TrackerError, TrackerState, UsageSession, filter_sessions, format_seconds,
-    install_launch_agent, legacy_data_dir, legacy_sessions_path, parse_date, service_status,
-    summarize_all, summarize_day, uninstall_launch_agent,
+    ActivityProbe, DEFAULT_IDLE_THRESHOLD_SECONDS, DEFAULT_INTERVAL_SECONDS,
+    DEFAULT_RECENT_CHECKPOINT_SECONDS, LogStore, MacOsProbe, Result, TrackerError, TrackerState,
+    UsageSession, filter_sessions, format_seconds, install_launch_agent, legacy_data_dir,
+    legacy_sessions_path, parse_date, service_status, summarize_all, summarize_day,
+    uninstall_launch_agent,
 };
 use chrono::{Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -42,7 +43,7 @@ enum Command {
     Summary(OutputArgs),
     /// Export sessions to CSV or JSONL.
     Export(ExportArgs),
-    /// Import legacy/exported CSV into JSONL with duplicate skipping.
+    /// Import legacy/exported CSV into local storage with duplicate skipping.
     ImportCsv(ImportCsvArgs),
     /// Print storage and service paths.
     Paths(OutputArgs),
@@ -183,6 +184,18 @@ fn run_tracker(store: &LogStore, args: TrackArgs) -> Result<()> {
     .map_err(|error| TrackerError::CtrlC(error.to_string()))?;
 
     store.ensure_dirs()?;
+    if let Some(session) =
+        store.recover_open_session(Local::now(), DEFAULT_RECENT_CHECKPOINT_SECONDS)?
+        && !args.quiet
+    {
+        println!(
+            "recovered -> {} {} [{}]",
+            session.app_name,
+            format_seconds(session.duration_seconds),
+            session.activity_type
+        );
+    }
+
     let probe = MacOsProbe;
     let interval = Duration::from_secs(args.interval_seconds.max(1));
     let mut state = TrackerState::new(
@@ -190,9 +203,10 @@ fn run_tracker(store: &LogStore, args: TrackArgs) -> Result<()> {
         Local::now(),
         args.idle_threshold_seconds,
     );
+    checkpoint_current_session(store, &state, Local::now())?;
 
     if !args.quiet {
-        println!("tracking -> {}", store.sessions_path().display());
+        println!("tracking -> {}", store.db_path().display());
     }
 
     while running.load(Ordering::SeqCst) {
@@ -209,11 +223,13 @@ fn run_tracker(store: &LogStore, args: TrackArgs) -> Result<()> {
                 println!("active -> {} [{}]", entity.name, entity.category);
             }
         }
+        checkpoint_current_session(store, &state, now)?;
     }
 
     if let Some(session) = state.finish(Local::now()) {
         persist_session(store, session, args.quiet)?;
     }
+    store.clear_checkpoint()?;
     store.refresh_default_csv()?;
     if !args.quiet {
         println!("stopped");
@@ -232,6 +248,18 @@ fn persist_session(store: &LogStore, session: UsageSession, quiet: bool) -> Resu
         );
     }
     Ok(())
+}
+
+fn checkpoint_current_session(
+    store: &LogStore,
+    state: &TrackerState,
+    observed_at: chrono::DateTime<Local>,
+) -> Result<()> {
+    if let Some(entity) = state.current_entity() {
+        store.checkpoint_session(entity, state.session_start(), observed_at)
+    } else {
+        store.clear_checkpoint()
+    }
 }
 
 fn print_day(store: &LogStore, args: DayArgs) -> Result<()> {
@@ -356,6 +384,7 @@ fn print_paths(store: &LogStore, args: OutputArgs) -> Result<()> {
 
 fn doctor(store: &LogStore, args: OutputArgs) -> Result<()> {
     store.ensure_dirs()?;
+    let checkpoint = store.open_session_checkpoint()?;
     let probe = MacOsProbe;
     let active = probe.active_entity()?;
     let idle_seconds = probe.idle_seconds()?;
@@ -374,6 +403,7 @@ fn doctor(store: &LogStore, args: OutputArgs) -> Result<()> {
             "idle_seconds": idle_seconds,
             "sqlite": store.db_path(),
             "sessions_path": store.sessions_path(),
+            "open_session": checkpoint,
             "legacy_sessions_path": legacy_sessions_path(),
         });
         print_json(&value)

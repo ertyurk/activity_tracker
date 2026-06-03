@@ -10,6 +10,7 @@ Build `activity_tracker` into a reliable local-first macOS activity history serv
 - Source of truth is SQLite at `~/.activity_tracker/activity.db`; JSONL is mirror/fallback; CSV is an export/view.
 - Preserve timestamps, app name, bundle ID, category, title, URL when available, and exact duration.
 - Preserve `activity_type` and treat idle as first-class log data, not as foreground app time.
+- Keep an `open_session` heartbeat checkpoint so service restarts recover the current span instead of dropping it.
 - Day queries must handle cross-midnight sessions by overlap, not only start date.
 - Background mode should use `launchd` via `activity_tracker service install`.
 - CLI output should support plain text for humans and `--json` for agents.

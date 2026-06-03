@@ -16,6 +16,7 @@ use thiserror::Error;
 
 pub const DEFAULT_INTERVAL_SECONDS: u64 = 2;
 pub const DEFAULT_IDLE_THRESHOLD_SECONDS: u64 = 300;
+pub const DEFAULT_RECENT_CHECKPOINT_SECONDS: u64 = 30;
 pub const SERVICE_LABEL: &str = "com.local.activity-tracker";
 pub const IDLE_BUNDLE_ID: &str = "local.activity_tracker.idle";
 
@@ -194,6 +195,13 @@ pub struct ImportReport {
     pub dry_run: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionCheckpoint {
+    pub start_time: DateTime<Local>,
+    pub last_seen_at: DateTime<Local>,
+    pub entity: ActiveEntity,
+}
+
 #[derive(Debug, Clone)]
 pub struct TrackerState {
     current_entity: Option<ActiveEntity>,
@@ -324,15 +332,20 @@ impl LogStore {
     }
 
     pub fn ensure_dirs(&self) -> Result<()> {
-        fs::create_dir_all(&self.root)?;
-        fs::create_dir_all(self.exports_dir())?;
-        fs::create_dir_all(self.logs_dir())?;
-        self.init_database()?;
+        self.ensure_database_ready()?;
         if self.migrate_jsonl_to_db_if_needed()? {
             self.rewrite_jsonl_mirror_from_db()?;
         } else {
             self.ensure_jsonl_mirror_exists()?;
         }
+        Ok(())
+    }
+
+    fn ensure_database_ready(&self) -> Result<()> {
+        fs::create_dir_all(&self.root)?;
+        fs::create_dir_all(self.exports_dir())?;
+        fs::create_dir_all(self.logs_dir())?;
+        self.init_database()?;
         Ok(())
     }
 
@@ -482,6 +495,73 @@ impl LogStore {
         Ok(report)
     }
 
+    pub fn checkpoint_session(
+        &self,
+        entity: &ActiveEntity,
+        start_time: DateTime<Local>,
+        last_seen_at: DateTime<Local>,
+    ) -> Result<()> {
+        self.ensure_database_ready()?;
+        let conn = Connection::open(self.db_path())?;
+        conn.execute(
+            "INSERT INTO open_session
+             (id, start_time, last_seen_at, app_name, bundle_id, title, category, url, activity_type)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+                 start_time = excluded.start_time,
+                 last_seen_at = excluded.last_seen_at,
+                 app_name = excluded.app_name,
+                 bundle_id = excluded.bundle_id,
+                 title = excluded.title,
+                 category = excluded.category,
+                 url = excluded.url,
+                 activity_type = excluded.activity_type",
+            params![
+                start_time.to_rfc3339(),
+                last_seen_at.to_rfc3339(),
+                &entity.name,
+                &entity.bundle_id,
+                &entity.title,
+                &entity.category,
+                &entity.url,
+                entity.activity_type.to_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_checkpoint(&self) -> Result<()> {
+        self.ensure_database_ready()?;
+        let conn = Connection::open(self.db_path())?;
+        conn.execute("DELETE FROM open_session WHERE id = 1", [])?;
+        Ok(())
+    }
+
+    pub fn open_session_checkpoint(&self) -> Result<Option<SessionCheckpoint>> {
+        self.ensure_database_ready()?;
+        self.load_open_session_checkpoint()
+    }
+
+    pub fn recover_open_session(
+        &self,
+        now: DateTime<Local>,
+        recent_gap_seconds: u64,
+    ) -> Result<Option<UsageSession>> {
+        self.ensure_dirs()?;
+        let Some(checkpoint) = self.load_open_session_checkpoint()? else {
+            return Ok(None);
+        };
+
+        let end_time = recovered_checkpoint_end(&checkpoint, now, recent_gap_seconds);
+        let recovered =
+            UsageSession::from_entity(&checkpoint.entity, checkpoint.start_time, end_time);
+        if let Some(session) = &recovered {
+            self.append_session(session)?;
+        }
+        self.clear_checkpoint()?;
+        Ok(recovered)
+    }
+
     fn init_database(&self) -> Result<()> {
         let conn = Connection::open(self.db_path())?;
         conn.execute_batch(
@@ -509,9 +589,48 @@ impl LogStore {
                  IFNULL(title, ''),
                  IFNULL(url, ''),
                  activity_type
+             );
+             CREATE TABLE IF NOT EXISTS open_session (
+                 id INTEGER PRIMARY KEY CHECK (id = 1),
+                 start_time TEXT NOT NULL,
+                 last_seen_at TEXT NOT NULL,
+                 app_name TEXT NOT NULL,
+                 bundle_id TEXT NOT NULL,
+                 title TEXT,
+                 category TEXT NOT NULL,
+                 url TEXT,
+                 activity_type TEXT NOT NULL DEFAULT 'active'
              );",
         )?;
         Ok(())
+    }
+
+    fn load_open_session_checkpoint(&self) -> Result<Option<SessionCheckpoint>> {
+        let conn = Connection::open(self.db_path())?;
+        let result = conn.query_row(
+            "SELECT start_time, last_seen_at, app_name, bundle_id, title, category, url, activity_type
+             FROM open_session
+             WHERE id = 1",
+            [],
+            |row| {
+                Ok(DbCheckpointRow {
+                    start_time: row.get(0)?,
+                    last_seen_at: row.get(1)?,
+                    app_name: row.get(2)?,
+                    bundle_id: row.get(3)?,
+                    title: row.get(4)?,
+                    category: row.get(5)?,
+                    url: row.get(6)?,
+                    activity_type: row.get(7)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(row) => row.into_checkpoint().map(Some),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 
     fn migrate_jsonl_to_db_if_needed(&self) -> Result<bool> {
@@ -1437,6 +1556,49 @@ impl DbSessionRow {
     }
 }
 
+#[derive(Debug, Clone)]
+struct DbCheckpointRow {
+    start_time: String,
+    last_seen_at: String,
+    app_name: String,
+    bundle_id: String,
+    title: Option<String>,
+    category: String,
+    url: Option<String>,
+    activity_type: String,
+}
+
+impl DbCheckpointRow {
+    fn into_checkpoint(self) -> Result<SessionCheckpoint> {
+        Ok(SessionCheckpoint {
+            start_time: parse_local_datetime(&self.start_time)?,
+            last_seen_at: parse_local_datetime(&self.last_seen_at)?,
+            entity: ActiveEntity {
+                bundle_id: self.bundle_id,
+                name: self.app_name,
+                title: self.title,
+                url: self.url,
+                category: self.category,
+                activity_type: self.activity_type.parse()?,
+            },
+        })
+    }
+}
+
+fn recovered_checkpoint_end(
+    checkpoint: &SessionCheckpoint,
+    now: DateTime<Local>,
+    recent_gap_seconds: u64,
+) -> DateTime<Local> {
+    if seconds_between(checkpoint.last_seen_at, now)
+        .is_some_and(|seconds| seconds <= recent_gap_seconds as f64)
+    {
+        now
+    } else {
+        checkpoint.last_seen_at
+    }
+}
+
 fn load_jsonl_sessions_from_path(path: &Path) -> Result<Vec<UsageSession>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
@@ -1568,6 +1730,74 @@ mod tests {
             mirrored.first().map(|session| &session.app_name),
             Some(&session.app_name)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn recover_recent_checkpoint_extends_to_restart_time() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let last_seen = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing last_seen"))?;
+        let restarted_at = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 1, 10)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing restarted_at"))?;
+
+        store.checkpoint_session(&entity(), start, last_seen)?;
+        let recovered = store.recover_open_session(restarted_at, 30)?;
+        let sessions = store.load_sessions()?;
+
+        assert_eq!(
+            recovered.as_ref().map(|session| session.end_time),
+            Some(restarted_at)
+        );
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions.first().map(|session| session.end_time),
+            Some(restarted_at)
+        );
+        assert!(store.open_session_checkpoint()?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn recover_stale_checkpoint_closes_at_last_seen() -> AnyhowResult<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LogStore::new(dir.path().to_path_buf());
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing start"))?;
+        let last_seen = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 1, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing last_seen"))?;
+        let restarted_at = Local
+            .with_ymd_and_hms(2026, 6, 3, 8, 10, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("missing restarted_at"))?;
+
+        store.checkpoint_session(&entity(), start, last_seen)?;
+        let recovered = store.recover_open_session(restarted_at, 30)?;
+        let sessions = store.load_sessions()?;
+
+        assert_eq!(
+            recovered.as_ref().map(|session| session.end_time),
+            Some(last_seen)
+        );
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions.first().map(|session| session.end_time),
+            Some(last_seen)
+        );
+        assert!(store.open_session_checkpoint()?.is_none());
         Ok(())
     }
 

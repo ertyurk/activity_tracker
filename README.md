@@ -10,6 +10,7 @@ In-progress local-first macOS activity tracker for building near-perfect persona
 - Captures active browser tab/window title when macOS reports it.
 - Stores source-of-truth logs in SQLite under `~/.activity_tracker/activity.db`.
 - Mirrors completed sessions to JSONL for audit/export fallback.
+- Maintains an open-session checkpoint so a restart can recover the active span instead of losing it.
 - Generates CSV exports for spreadsheet workflows.
 - Provides `--json` output for AI/tool callers.
 - Installs as a `launchd` user service for behind-the-scenes collection.
@@ -76,6 +77,7 @@ Files:
 - `logs/`: launchd stdout/stderr logs
 
 Legacy data from `~/Library/Application Support/activity_tracker/sessions.jsonl` is auto-migrated into SQLite on first service/doctor/write run.
+The SQLite DB also keeps a single `open_session` heartbeat row while the tracker is running. Clean shutdown clears it; restart recovery converts it into a completed session and then starts a fresh checkpoint.
 
 Override per command:
 
